@@ -101,6 +101,10 @@ public final class IrisNativeVulkan {
 			return Optional.empty();
 		}
 
+		if (isNativeVulkanGbufferShader(shaderKey) && !shouldCaptureGbuffers()) {
+			return Optional.empty();
+		}
+
 		if (!shouldAttemptVulkanOverride(shaderKey)) {
 			return Optional.empty();
 		}

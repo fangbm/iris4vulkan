@@ -28,9 +28,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,6 +46,7 @@ public final class IrisVulkanFinalPassRenderer {
 	private final List<Pass> deferredPasses;
 	private final List<Pass> compositePasses;
 	private final Pass finalPass;
+	private final Set<Pass> failedPasses = new HashSet<>();
 
 	public IrisVulkanFinalPassRenderer(ProgramSet programSet) {
 		this.deferredPasses = createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred");
@@ -86,16 +89,17 @@ public final class IrisVulkanFinalPassRenderer {
 		GpuTextureView depthView = main.getDepthTextureView();
 
 		for (Pass screenPass : deferredPasses) {
-			renderLogicalPass(encoder, screenPass, depthView, indices, indexType);
+			renderLogicalPassIfAvailable(encoder, screenPass, depthView, indices, indexType);
 		}
 
 		for (Pass screenPass : compositePasses) {
-			renderLogicalPass(encoder, screenPass, depthView, indices, indexType);
+			renderLogicalPassIfAvailable(encoder, screenPass, depthView, indices, indexType);
 		}
 
-		if (finalPass != null) {
-			renderFinalPass(encoder, finalPass, main.getColorTextureView(), depthView, indices, indexType);
-		} else if ((colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
+		boolean renderedFinal = finalPass != null && renderFinalPassIfAvailable(encoder, finalPass,
+			main.getColorTextureView(), depthView, indices, indexType);
+
+		if (!renderedFinal && (colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
 			GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
 			encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0, colorTexture.getWidth(0), colorTexture.getHeight(0));
 		}
@@ -204,6 +208,36 @@ public final class IrisVulkanFinalPassRenderer {
 		return fragment.contains("sampler3D")
 			|| fragment.contains("sampler1D")
 			|| fragment.contains("sampler2DRect");
+	}
+
+	private void renderLogicalPassIfAvailable(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,
+											  GpuBuffer indices, IndexType indexType) {
+		if (failedPasses.contains(screenPass)) {
+			return;
+		}
+
+		try {
+			renderLogicalPass(encoder, screenPass, depthView, indices, indexType);
+		} catch (RuntimeException e) {
+			failedPasses.add(screenPass);
+			Iris.logger.warn("Skipping native Vulkan screen pass {} after an error: {}", screenPass.name(), e.getMessage());
+		}
+	}
+
+	private boolean renderFinalPassIfAvailable(CommandEncoder encoder, Pass screenPass, GpuTextureView outputView,
+											   GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+		if (failedPasses.contains(screenPass)) {
+			return false;
+		}
+
+		try {
+			renderFinalPass(encoder, screenPass, outputView, depthView, indices, indexType);
+			return true;
+		} catch (RuntimeException e) {
+			failedPasses.add(screenPass);
+			Iris.logger.warn("Skipping native Vulkan final pass {} after an error: {}", screenPass.name(), e.getMessage());
+			return false;
+		}
 	}
 
 	private void renderLogicalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,

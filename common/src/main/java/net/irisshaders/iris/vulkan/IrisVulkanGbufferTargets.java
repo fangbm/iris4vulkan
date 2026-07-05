@@ -64,10 +64,10 @@ public final class IrisVulkanGbufferTargets {
 			return false;
 		}
 
-		var main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-		GpuTexture colorTexture = main.getColorTexture();
+		GpuTexture colorTexture = first.textureView().texture();
+		GpuTexture mainColorTexture = Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTexture();
 
-		if (colorTexture == null || colorTexture.isClosed() || first.textureView().texture() != colorTexture) {
+		if (!isMainSizedColorTarget(colorTexture, mainColorTexture)) {
 			return false;
 		}
 
@@ -93,7 +93,8 @@ public final class IrisVulkanGbufferTargets {
 
 		if (!loggedCapture) {
 			loggedCapture = true;
-			Iris.logger.info("Capturing native Vulkan gbuffers into colortex draw buffers {}.", Arrays.toString(activeDrawBuffers));
+			Iris.logger.info("Capturing native Vulkan gbuffers into colortex draw buffers {} from {}.",
+				Arrays.toString(activeDrawBuffers), descriptor.label().get());
 		}
 
 		return true;
@@ -213,6 +214,12 @@ public final class IrisVulkanGbufferTargets {
 	}
 
 	public static void close() {
+		destroyTargets();
+		frameOpen = false;
+		frameActive = false;
+	}
+
+	private static void destroyTargets() {
 		for (int i = 0; i < targets.length; i++) {
 			if (targets[i] != null) {
 				targets[i].close();
@@ -223,8 +230,6 @@ public final class IrisVulkanGbufferTargets {
 		width = 0;
 		height = 0;
 		format = null;
-		frameOpen = false;
-		frameActive = false;
 	}
 
 	private static boolean shouldCaptureCurrentPhase() {
@@ -245,6 +250,17 @@ public final class IrisVulkanGbufferTargets {
 			|| phase == WorldRenderingPhase.TERRAIN_CUTOUT_MIPPED;
 	}
 
+	private static boolean isMainSizedColorTarget(GpuTexture candidate, GpuTexture mainColorTexture) {
+		if (candidate == null || candidate.isClosed() || mainColorTexture == null || mainColorTexture.isClosed()) {
+			return false;
+		}
+
+		return candidate.getWidth(0) == mainColorTexture.getWidth(0)
+			&& candidate.getHeight(0) == mainColorTexture.getHeight(0)
+			&& candidate.getFormat() == mainColorTexture.getFormat()
+			&& (candidate.usage() & GpuTexture.USAGE_COPY_SRC) != 0;
+	}
+
 	private static void ensure(GpuTexture source) {
 		int newWidth = source.getWidth(0);
 		int newHeight = source.getHeight(0);
@@ -254,7 +270,7 @@ public final class IrisVulkanGbufferTargets {
 			return;
 		}
 
-		close();
+		destroyTargets();
 		width = newWidth;
 		height = newHeight;
 		format = newFormat;

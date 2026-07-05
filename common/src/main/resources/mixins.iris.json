@@ -79,6 +79,7 @@
     "MixinUniform",
     "MixinWindow",
     "VKOnly_RenderSystem",
+    "VKOnly_MixinLevelRenderer_NativeVulkan",
     "VKOnly_MixinCommandEncoder_GbufferAttachments",
     "VKOnly_MixinRenderPass_Bindings",
     "vulkan.VKOnly_MixinVulkanDevice_Overrides",

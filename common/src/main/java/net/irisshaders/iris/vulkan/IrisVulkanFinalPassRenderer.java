@@ -59,6 +59,7 @@ public final class IrisVulkanFinalPassRenderer {
 
 	public void render() {
 		if (deferredPasses.isEmpty() && compositePasses.isEmpty() && finalPass == null) {
+			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
 
@@ -66,11 +67,13 @@ public final class IrisVulkanFinalPassRenderer {
 		GpuTexture colorTexture = main.getColorTexture();
 
 		if (colorTexture == null || colorTexture.isClosed()) {
+			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
 
 		if ((colorTexture.usage() & GpuTexture.USAGE_COPY_SRC) == 0) {
 			Iris.logger.warn("Cannot run native Vulkan screen passes because the main color texture is not copyable.");
+			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
 

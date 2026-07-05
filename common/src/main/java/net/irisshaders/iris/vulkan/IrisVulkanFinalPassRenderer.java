@@ -9,6 +9,7 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.blaze3d.systems.RenderPass.RenderArea;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTexture;
@@ -196,9 +197,19 @@ public final class IrisVulkanFinalPassRenderer {
 	private void renderLogicalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,
 								   GpuBuffer indices, IndexType indexType) {
 		RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Iris native Vulkan " + screenPass.name());
+		GpuTextureView firstOutputView = null;
 
 		for (int logicalTarget : screenPass.drawBuffers()) {
-			descriptor.withColorAttachment(IrisVulkanGbufferTargets.nextView(logicalTarget));
+			GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(logicalTarget);
+			if (firstOutputView == null) {
+				firstOutputView = outputView;
+			}
+
+			descriptor.withColorAttachment(outputView);
+		}
+
+		if (firstOutputView != null) {
+			descriptor.withRenderArea(new RenderArea(0, 0, firstOutputView.getWidth(0), firstOutputView.getHeight(0)));
 		}
 
 		try (RenderPass pass = encoder.createRenderPass(descriptor)) {

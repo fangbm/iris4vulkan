@@ -227,7 +227,7 @@ public final class IrisNativeVulkan {
 		}
 
 		ShaderPack pack = currentPack.get();
-		boolean rendererChanged = finalPassRenderer == null || finalPassPack != pack || !dimension.equals(finalPassDimension);
+		boolean rendererChanged = finalPassPack != pack || !dimension.equals(finalPassDimension);
 
 		if (rendererChanged) {
 			destroyFinalPassRenderer();

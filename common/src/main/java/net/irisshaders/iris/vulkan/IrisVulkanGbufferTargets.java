@@ -54,6 +54,11 @@ public final class IrisVulkanGbufferTargets {
 			return false;
 		}
 
+		String label = descriptor.label().get();
+		if (shouldSkipCaptureLabel(label)) {
+			return false;
+		}
+
 		if (descriptor.depthAttachment() == null || descriptor.colorAttachments().size() != 1) {
 			return false;
 		}
@@ -94,7 +99,7 @@ public final class IrisVulkanGbufferTargets {
 		if (!loggedCapture) {
 			loggedCapture = true;
 			Iris.logger.info("Capturing native Vulkan gbuffers into colortex draw buffers {} from {}.",
-				Arrays.toString(activeDrawBuffers), descriptor.label().get());
+				Arrays.toString(activeDrawBuffers), label);
 		}
 
 		return true;
@@ -259,6 +264,21 @@ public final class IrisVulkanGbufferTargets {
 			&& candidate.getHeight(0) == mainColorTexture.getHeight(0)
 			&& candidate.getFormat() == mainColorTexture.getFormat()
 			&& (candidate.usage() & GpuTexture.USAGE_COPY_SRC) != 0;
+	}
+
+	private static boolean shouldSkipCaptureLabel(String label) {
+		if (label == null) {
+			return false;
+		}
+
+		String normalized = label.toLowerCase(java.util.Locale.ROOT);
+		return normalized.contains("sky")
+			|| normalized.contains("cloud")
+			|| normalized.contains("weather")
+			|| normalized.contains("sun")
+			|| normalized.contains("moon")
+			|| normalized.contains("stars")
+			|| normalized.contains("horizon");
 	}
 
 	private static void ensure(GpuTexture source) {

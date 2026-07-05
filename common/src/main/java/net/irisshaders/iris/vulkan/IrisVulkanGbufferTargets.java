@@ -41,7 +41,7 @@ public final class IrisVulkanGbufferTargets {
 	}
 
 	public static void beginFrameCapture() {
-		if (!IrisBackend.isVulkan(RenderSystem.getDevice())) {
+		if (!IrisBackend.isVulkan(RenderSystem.getDevice()) || !IrisNativeVulkan.shouldCaptureGbuffers()) {
 			return;
 		}
 
@@ -275,6 +275,14 @@ public final class IrisVulkanGbufferTargets {
 		return normalized.contains("sky")
 			|| normalized.contains("cloud")
 			|| normalized.contains("weather")
+			|| normalized.contains("particle")
+			|| normalized.contains("entity")
+			|| normalized.contains("outline")
+			|| normalized.contains("gui")
+			|| normalized.contains("vignette")
+			|| normalized.contains("crosshair")
+			|| normalized.contains("blur")
+			|| normalized.contains("lightmap")
 			|| normalized.contains("sun")
 			|| normalized.contains("moon")
 			|| normalized.contains("stars")

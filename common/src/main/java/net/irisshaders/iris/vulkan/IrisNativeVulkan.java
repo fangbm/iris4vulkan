@@ -237,6 +237,7 @@ public final class IrisNativeVulkan {
 		}
 
 		if (finalPassFailed) {
+			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
 
@@ -248,9 +249,14 @@ public final class IrisNativeVulkan {
 			finalPassRenderer.render();
 		} catch (RuntimeException e) {
 			finalPassFailed = true;
+			IrisVulkanGbufferTargets.finishFrame();
 			destroyFinalPassRenderer();
 			Iris.logger.warn("Disabling Iris native Vulkan final pass for this shaderpack after an error: {}", e.getMessage());
 		}
+	}
+
+	public static boolean shouldCaptureGbuffers() {
+		return !finalPassFailed;
 	}
 
 	private static void destroyFinalPassRenderer() {

@@ -35,7 +35,7 @@ public class VKOnly_MixinLevelRenderer_NativeVulkan {
 		IrisVulkanGbufferTargets.beginFrameCapture();
 	}
 
-	@Inject(method = "render", at = @At(value = "INVOKE", target = "Lorg/joml/Matrix4fStack;popMatrix()Lorg/joml/Matrix4fStack;"))
+	@Inject(method = "render", at = @At("RETURN"))
 	private void iris$runNativeVulkanFinalPass(GraphicsResourceAllocator resourceAllocator, DeltaTracker deltaTracker,
 											   boolean renderOutline, CameraRenderState cameraState, Matrix4fc modelViewMatrix,
 											   GpuBufferSlice terrainFog, Vector4f fogColor, boolean shouldRenderSky,

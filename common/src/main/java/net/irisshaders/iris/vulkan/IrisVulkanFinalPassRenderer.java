@@ -163,6 +163,12 @@ public final class IrisVulkanFinalPassRenderer {
 			programSet.getPackDirectives().getTextureMap());
 
 		String fragment = transformed.get(PatchShaderType.FRAGMENT);
+		if (usesUnsupportedSamplerType(fragment)) {
+			Iris.logger.warn("Native Vulkan screen pass {} uses unsupported non-2D sampler types; skipping it for now.",
+				source.getName());
+			return null;
+		}
+
 		int[] drawBuffers = collapseOutputs ? new int[] { FALLBACK_SCENE_TARGET } : drawBuffers(fragment);
 
 		if (!collapseOutputs && drawBuffers.length == 0) {
@@ -192,6 +198,12 @@ public final class IrisVulkanFinalPassRenderer {
 		IrisNativeVulkan.registerCustomPipelineSource(pipeline, safeName,
 			transformed.get(PatchShaderType.VERTEX), fragment, collapseOutputs);
 		return new Pass(source.getName(), pipeline, drawBuffers);
+	}
+
+	private static boolean usesUnsupportedSamplerType(String fragment) {
+		return fragment.contains("sampler3D")
+			|| fragment.contains("sampler1D")
+			|| fragment.contains("sampler2DRect");
 	}
 
 	private void renderLogicalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,

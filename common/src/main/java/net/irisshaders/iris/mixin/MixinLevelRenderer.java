@@ -27,7 +27,6 @@ import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.IrisTimeUniforms;
-import net.irisshaders.iris.vulkan.IrisVulkanGbufferTargets;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -122,7 +121,6 @@ public abstract class MixinLevelRenderer {
 		this.disableFrustumCulling = pipeline.shouldDisableFrustumCulling();
 
     	pipeline.beginLevelRendering();
-		IrisVulkanGbufferTargets.beginFrameCapture();
 		pipeline.setPhase(WorldRenderingPhase.NONE);
 		IrisRenderSystem.backupAndDisableCullingState(pipeline.shouldDisableOcclusionCulling());
 

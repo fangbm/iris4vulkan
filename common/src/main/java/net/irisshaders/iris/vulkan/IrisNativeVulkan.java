@@ -213,8 +213,24 @@ public final class IrisNativeVulkan {
 	}
 
 	public static void renderFinalPassIfReady() {
-		if (!IrisBackend.isVulkan(RenderSystem.getDevice())) {
+		if (!prepareFinalPassForFrame()) {
+			IrisVulkanGbufferTargets.finishFrame();
 			return;
+		}
+
+		try {
+			finalPassRenderer.render();
+		} catch (RuntimeException e) {
+			finalPassFailed = true;
+			IrisVulkanGbufferTargets.finishFrame();
+			destroyFinalPassRenderer();
+			Iris.logger.warn("Disabling Iris native Vulkan final pass for this shaderpack after an error: {}", e.getMessage());
+		}
+	}
+
+	public static boolean prepareFinalPassForFrame() {
+		if (!IrisBackend.isVulkan(RenderSystem.getDevice())) {
+			return false;
 		}
 
 		loadShaderpackIfReady();
@@ -222,7 +238,7 @@ public final class IrisNativeVulkan {
 
 		if (currentPack.isEmpty()) {
 			destroyFinalPassRenderer();
-			return;
+			return false;
 		}
 
 		NamespacedId dimension = Iris.getCurrentDimension();
@@ -241,26 +257,31 @@ public final class IrisNativeVulkan {
 		}
 
 		if (finalPassFailed) {
-			IrisVulkanGbufferTargets.finishFrame();
-			return;
+			return false;
 		}
 
 		try {
 			if (finalPassRenderer == null) {
 				finalPassRenderer = new IrisVulkanFinalPassRenderer(pack.getProgramSet(dimension));
+
+				if (!finalPassRenderer.hasRunnablePasses()) {
+					finalPassFailed = true;
+					destroyFinalPassRenderer();
+					return false;
+				}
 			}
 
-			finalPassRenderer.render();
+			return true;
 		} catch (RuntimeException e) {
 			finalPassFailed = true;
-			IrisVulkanGbufferTargets.finishFrame();
 			destroyFinalPassRenderer();
 			Iris.logger.warn("Disabling Iris native Vulkan final pass for this shaderpack after an error: {}", e.getMessage());
+			return false;
 		}
 	}
 
 	public static boolean shouldCaptureGbuffers() {
-		return !finalPassFailed;
+		return !finalPassFailed && finalPassRenderer != null && finalPassRenderer.hasRunnablePasses();
 	}
 
 	private static void destroyFinalPassRenderer() {

@@ -55,6 +55,9 @@ public final class IrisVulkanGbufferTargets {
 		}
 
 		String label = descriptor.label().get();
+		if (label == null) {
+			label = "";
+		}
 		if (shouldSkipCaptureLabel(label)) {
 			return false;
 		}

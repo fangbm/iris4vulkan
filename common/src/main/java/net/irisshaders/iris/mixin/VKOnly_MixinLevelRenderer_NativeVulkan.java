@@ -32,7 +32,10 @@ public class VKOnly_MixinLevelRenderer_NativeVulkan {
 		CapturedRenderingState.INSTANCE.setGbufferProjection(new Matrix4f(((GameRendererStorage) Minecraft.getInstance().gameRenderer).sodium$getProjectionMatrix()));
 		CapturedRenderingState.INSTANCE.setTickDelta(deltaTracker.getGameTimeDeltaPartialTick(false));
 		Iris.getPipelineManager().preparePipeline(Iris.getCurrentDimension());
-		IrisVulkanGbufferTargets.beginFrameCapture();
+
+		if (IrisNativeVulkan.prepareFinalPassForFrame()) {
+			IrisVulkanGbufferTargets.beginFrameCapture();
+		}
 	}
 
 	@Inject(method = "render", at = @At("RETURN"))

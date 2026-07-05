@@ -42,6 +42,7 @@ public final class IrisVulkanFinalPassRenderer {
 	private static final int FINAL_SOURCE_TARGET = IrisVulkanGbufferTargets.FINAL_SOURCE_TARGET;
 	private static final Pattern DRAWBUFFERS = Pattern.compile("DRAWBUFFERS\\s*:\\s*([0-9]+)");
 	private static final Pattern OUTPUT = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*out\\s+[A-Za-z_][A-Za-z0-9_]*\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;");
+	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+([iu]?sampler\\w+)\\s+(\\w+)\\s*(?:\\[[^]]+])?\\s*;");
 
 	private final List<Pass> deferredPasses;
 	private final List<Pass> compositePasses;
@@ -62,7 +63,7 @@ public final class IrisVulkanFinalPassRenderer {
 	}
 
 	public void render() {
-		if (deferredPasses.isEmpty() && compositePasses.isEmpty() && finalPass == null) {
+		if (!hasRunnablePasses()) {
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
@@ -122,6 +123,10 @@ public final class IrisVulkanFinalPassRenderer {
 
 	}
 
+	public boolean hasRunnablePasses() {
+		return !deferredPasses.isEmpty() || !compositePasses.isEmpty() || finalPass != null;
+	}
+
 	private static List<Pass> createPasses(ProgramSet programSet, ProgramArrayId programArrayId,
 										   TextureStage stage, String namespace) {
 		List<Pass> passes = new ArrayList<>();
@@ -173,6 +178,13 @@ public final class IrisVulkanFinalPassRenderer {
 			return null;
 		}
 
+		List<String> unsupportedSamplers = unsupportedSamplers(fragment);
+		if (!unsupportedSamplers.isEmpty()) {
+			Iris.logger.warn("Native Vulkan screen pass {} needs unsupported texture sampler(s) {}; skipping it for now.",
+				source.getName(), unsupportedSamplers);
+			return null;
+		}
+
 		int[] drawBuffers = collapseOutputs ? new int[] { FALLBACK_SCENE_TARGET } : drawBuffers(fragment);
 
 		if (!collapseOutputs && drawBuffers.length == 0) {
@@ -207,7 +219,49 @@ public final class IrisVulkanFinalPassRenderer {
 	private static boolean usesUnsupportedSamplerType(String fragment) {
 		return fragment.contains("sampler3D")
 			|| fragment.contains("sampler1D")
-			|| fragment.contains("sampler2DRect");
+			|| fragment.contains("sampler2DRect")
+			|| fragment.contains("sampler2DArray")
+			|| fragment.contains("samplerCube")
+			|| fragment.contains("samplerBuffer")
+			|| fragment.contains("sampler2DShadow");
+	}
+
+	private static List<String> unsupportedSamplers(String fragment) {
+		Matcher matcher = SAMPLER.matcher(fragment);
+		List<String> unsupported = new ArrayList<>();
+
+		while (matcher.find()) {
+			String type = matcher.group(1);
+			String name = matcher.group(2);
+
+			if (!isSupportedSamplerType(type) || !isSupportedSamplerName(name)) {
+				unsupported.add(name);
+			}
+		}
+
+		return unsupported;
+	}
+
+	private static boolean isSupportedSamplerType(String type) {
+		return type.equals("sampler2D") || type.equals("isampler2D") || type.equals("usampler2D");
+	}
+
+	private static boolean isSupportedSamplerName(String name) {
+		if (name.startsWith("colortex")) {
+			try {
+				int index = Integer.parseInt(name.substring("colortex".length()));
+				return index >= 0 && index < COLOR_TARGET_COUNT;
+			} catch (NumberFormatException ignored) {
+				return false;
+			}
+		}
+
+		return switch (name) {
+			case "InSampler", "Sampler0", "u_MainSampler", "texture", "tex", "composite",
+				 "gcolor", "gdepth", "gnormal", "gaux1", "gaux2", "gaux3", "gaux4",
+				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex" -> true;
+			default -> false;
+		};
 	}
 
 	private void renderLogicalPassIfAvailable(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,
@@ -261,7 +315,6 @@ public final class IrisVulkanFinalPassRenderer {
 		try (RenderPass pass = encoder.createRenderPass(descriptor)) {
 			pass.setPipeline(screenPass.pipeline());
 			RenderSystem.bindDefaultUniforms(pass);
-			IrisVulkanGbufferTargets.bindSamplers(pass, depthView);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);
@@ -277,7 +330,6 @@ public final class IrisVulkanFinalPassRenderer {
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + screenPass.name(), outputView, java.util.Optional.empty())) {
 			pass.setPipeline(screenPass.pipeline());
 			RenderSystem.bindDefaultUniforms(pass);
-			IrisVulkanGbufferTargets.bindSamplers(pass, depthView);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);

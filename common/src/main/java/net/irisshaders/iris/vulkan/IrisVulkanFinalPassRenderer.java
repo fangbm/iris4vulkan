@@ -134,6 +134,10 @@ public final class IrisVulkanFinalPassRenderer {
 		return finalPass != null;
 	}
 
+	public boolean requiresGbufferCapture() {
+		return !deferredPasses.isEmpty() || !compositePasses.isEmpty();
+	}
+
 	private static List<Pass> createPasses(ProgramSet programSet, ProgramArrayId programArrayId,
 										   TextureStage stage, String namespace) {
 		List<Pass> passes = new ArrayList<>();

@@ -294,7 +294,7 @@ public final class IrisNativeVulkan {
 	}
 
 	public static boolean shouldCaptureGbuffers() {
-		return !finalPassFailed && finalPassRenderer != null && finalPassRenderer.hasRunnablePasses();
+		return !finalPassFailed && finalPassRenderer != null && finalPassRenderer.requiresGbufferCapture();
 	}
 
 	private static void destroyFinalPassRenderer() {

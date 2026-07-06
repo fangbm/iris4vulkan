@@ -39,7 +39,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class IrisNativeVulkan {
-	private static final boolean ENABLE_EXPERIMENTAL_SCREEN_PASSES = Boolean.getBoolean("iris.vulkan.experimentalScreenPasses");
+	private static final ScreenPassMode SCREEN_PASS_MODE = ScreenPassMode.fromProperties();
 	private static boolean loggedRendererInit;
 	private static boolean loggedScreenPassesDisabled;
 	private static boolean attemptedInitialShaderpackLoad;
@@ -248,7 +248,7 @@ public final class IrisNativeVulkan {
 			return false;
 		}
 
-		if (!experimentalScreenPassesEnabled()) {
+		if (!screenPassGraphEnabled()) {
 			destroyFinalPassRenderer();
 			return false;
 		}
@@ -301,20 +301,24 @@ public final class IrisNativeVulkan {
 	}
 
 	public static boolean shouldCaptureGbuffers() {
-		return ENABLE_EXPERIMENTAL_SCREEN_PASSES
+		return SCREEN_PASS_MODE.runsLogicalPasses()
 			&& !finalPassFailed
 			&& finalPassRenderer != null
 			&& finalPassRenderer.requiresGbufferCapture();
 	}
 
-	private static boolean experimentalScreenPassesEnabled() {
-		if (ENABLE_EXPERIMENTAL_SCREEN_PASSES) {
+	public static ScreenPassMode screenPassMode() {
+		return SCREEN_PASS_MODE;
+	}
+
+	private static boolean screenPassGraphEnabled() {
+		if (SCREEN_PASS_MODE.buildsGraph()) {
 			return true;
 		}
 
 		if (!loggedScreenPassesDisabled) {
 			loggedScreenPassesDisabled = true;
-			Iris.logger.info("Iris native Vulkan shaderpack screen passes are disabled while the pass graph is being rebuilt.");
+			Iris.logger.info("Iris native Vulkan shaderpack screen pass graph is disabled.");
 		}
 
 		return false;
@@ -575,5 +579,54 @@ public final class IrisNativeVulkan {
 	}
 
 	private record CustomPipelineSource(String name, String vertex, String fragment, boolean collapseFragmentOutputs) {
+	}
+
+	public enum ScreenPassMode {
+		OFF(false, false, false),
+		BUILD_ONLY(true, false, false),
+		FINAL(true, true, false),
+		ALL(true, true, true);
+
+		private final boolean buildsGraph;
+		private final boolean runsFinalPass;
+		private final boolean runsLogicalPasses;
+
+		ScreenPassMode(boolean buildsGraph, boolean runsFinalPass, boolean runsLogicalPasses) {
+			this.buildsGraph = buildsGraph;
+			this.runsFinalPass = runsFinalPass;
+			this.runsLogicalPasses = runsLogicalPasses;
+		}
+
+		public boolean buildsGraph() {
+			return buildsGraph;
+		}
+
+		public boolean runsFinalPass() {
+			return runsFinalPass;
+		}
+
+		public boolean runsLogicalPasses() {
+			return runsLogicalPasses;
+		}
+
+		private static ScreenPassMode fromProperties() {
+			String configured = System.getProperty("iris.vulkan.screenPassMode");
+
+			if (configured != null && !configured.isBlank()) {
+				return switch (configured.trim().toLowerCase(java.util.Locale.ROOT)) {
+					case "off", "false", "disabled" -> OFF;
+					case "build", "build_only", "build-only", "diagnostic", "diagnostics" -> BUILD_ONLY;
+					case "final", "final_only", "final-only" -> FINAL;
+					case "all", "true", "enabled" -> ALL;
+					default -> BUILD_ONLY;
+				};
+			}
+
+			if (Boolean.getBoolean("iris.vulkan.experimentalScreenPasses")) {
+				return FINAL;
+			}
+
+			return BUILD_ONLY;
+		}
 	}
 }

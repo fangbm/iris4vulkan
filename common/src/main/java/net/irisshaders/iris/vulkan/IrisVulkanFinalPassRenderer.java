@@ -28,6 +28,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -43,34 +44,46 @@ public final class IrisVulkanFinalPassRenderer {
 	private static final Pattern DRAWBUFFERS = Pattern.compile("DRAWBUFFERS\\s*:\\s*([0-9]+)");
 	private static final Pattern OUTPUT = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*out\\s+[A-Za-z_][A-Za-z0-9_]*\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;");
 	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+([iu]?sampler\\w+)\\s+(\\w+)\\s*(?:\\[[^]]+])?\\s*;");
-	private static final boolean RUN_LOGICAL_SCREEN_PASSES = false;
 
 	private final List<Pass> deferredPasses;
 	private final List<Pass> compositePasses;
 	private final Pass finalPass;
+	private final IrisNativeVulkan.ScreenPassMode mode;
 	private final Set<Pass> failedPasses = new HashSet<>();
+	private boolean loggedBuildOnlyFrame;
 
 	public IrisVulkanFinalPassRenderer(ProgramSet programSet) {
+		this.mode = IrisNativeVulkan.screenPassMode();
 		this.finalPass = createFinalPass(programSet);
 
 		if (finalPass == null) {
 			this.deferredPasses = List.of();
 			this.compositePasses = List.of();
 			Iris.logger.info("Shaderpack has no supported native Vulkan final pass; screen pass chain is disabled.");
-		} else if (!RUN_LOGICAL_SCREEN_PASSES) {
-			this.deferredPasses = List.of();
-			this.compositePasses = List.of();
-			Iris.logger.info("Registered native Vulkan final pass; deferred/composite screen passes are disabled for now.");
 		} else {
-			this.deferredPasses = createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred");
-			this.compositePasses = createPasses(programSet, ProgramArrayId.Composite, TextureStage.COMPOSITE_AND_FINAL, "composite");
-			Iris.logger.info("Registered {} native Vulkan deferred pass(es), {} composite pass(es){}.",
-				deferredPasses.size(), compositePasses.size(), " plus final");
+			boolean buildLogicalPassGraph = mode == IrisNativeVulkan.ScreenPassMode.BUILD_ONLY || mode.runsLogicalPasses();
+			this.deferredPasses = buildLogicalPassGraph
+				? createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred")
+				: List.of();
+			this.compositePasses = buildLogicalPassGraph
+				? createPasses(programSet, ProgramArrayId.Composite, TextureStage.COMPOSITE_AND_FINAL, "composite")
+				: List.of();
+			logPassGraph();
 		}
 	}
 
 	public void render() {
 		if (!hasRunnablePasses()) {
+			IrisVulkanGbufferTargets.finishFrame();
+			return;
+		}
+
+		if (!mode.runsFinalPass()) {
+			if (!loggedBuildOnlyFrame) {
+				loggedBuildOnlyFrame = true;
+				Iris.logger.info("Native Vulkan screen pass graph is in {} mode; skipping draws.", mode.name().toLowerCase(Locale.ROOT));
+			}
+
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
@@ -135,7 +148,29 @@ public final class IrisVulkanFinalPassRenderer {
 	}
 
 	public boolean requiresGbufferCapture() {
-		return !deferredPasses.isEmpty() || !compositePasses.isEmpty();
+		return mode.runsLogicalPasses() && (!deferredPasses.isEmpty() || !compositePasses.isEmpty());
+	}
+
+	private void logPassGraph() {
+		Iris.logger.info("Built native Vulkan screen pass graph in {} mode: {} deferred pass(es), {} composite pass(es), final={}.",
+			mode.name().toLowerCase(Locale.ROOT), deferredPasses.size(), compositePasses.size(), finalPass != null);
+
+		for (Pass pass : deferredPasses) {
+			logPassNode(pass);
+		}
+
+		for (Pass pass : compositePasses) {
+			logPassNode(pass);
+		}
+
+		if (finalPass != null) {
+			logPassNode(finalPass);
+		}
+	}
+
+	private static void logPassNode(Pass pass) {
+		Iris.logger.info("Native Vulkan screen pass node {}: drawBuffers={}, samplers={}, collapseOutputs={}.",
+			pass.label(), Arrays.toString(pass.drawBuffers()), pass.samplers(), pass.collapseOutputs());
 	}
 
 	private static List<Pass> createPasses(ProgramSet programSet, ProgramArrayId programArrayId,
@@ -224,7 +259,7 @@ public final class IrisVulkanFinalPassRenderer {
 		RenderPipeline pipeline = builder.build();
 		IrisNativeVulkan.registerCustomPipelineSource(pipeline, safeName,
 			transformed.get(PatchShaderType.VERTEX), fragment, collapseOutputs);
-		return new Pass(source.getName(), pipeline, drawBuffers);
+		return new Pass(safeName, source.getName(), pipeline, drawBuffers, samplerNames(fragment), collapseOutputs);
 	}
 
 	private static boolean usesUnsupportedSamplerType(String fragment) {
@@ -251,6 +286,17 @@ public final class IrisVulkanFinalPassRenderer {
 		}
 
 		return unsupported;
+	}
+
+	private static List<String> samplerNames(String fragment) {
+		Matcher matcher = SAMPLER.matcher(fragment);
+		List<String> samplers = new ArrayList<>();
+
+		while (matcher.find()) {
+			samplers.add(matcher.group(2));
+		}
+
+		return List.copyOf(samplers);
 	}
 
 	private static boolean isSupportedSamplerType(String type) {
@@ -285,7 +331,7 @@ public final class IrisVulkanFinalPassRenderer {
 			renderLogicalPass(encoder, screenPass, depthView, indices, indexType);
 		} catch (RuntimeException e) {
 			failedPasses.add(screenPass);
-			Iris.logger.warn("Skipping native Vulkan screen pass {} after an error: {}", screenPass.name(), e.getMessage());
+			Iris.logger.warn("Skipping native Vulkan screen pass {} after an error: {}", screenPass.label(), e.getMessage());
 		}
 	}
 
@@ -300,14 +346,14 @@ public final class IrisVulkanFinalPassRenderer {
 			return true;
 		} catch (RuntimeException e) {
 			failedPasses.add(screenPass);
-			Iris.logger.warn("Skipping native Vulkan final pass {} after an error: {}", screenPass.name(), e.getMessage());
+			Iris.logger.warn("Skipping native Vulkan final pass {} after an error: {}", screenPass.label(), e.getMessage());
 			return false;
 		}
 	}
 
 	private void renderLogicalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView,
 								   GpuBuffer indices, IndexType indexType) {
-		RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Iris native Vulkan " + screenPass.name());
+		RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Iris native Vulkan " + screenPass.label());
 		GpuTextureView firstOutputView = null;
 
 		for (int logicalTarget : screenPass.drawBuffers()) {
@@ -338,7 +384,7 @@ public final class IrisVulkanFinalPassRenderer {
 
 	private void renderFinalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView outputView,
 								 GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
-		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + screenPass.name(), outputView, java.util.Optional.empty())) {
+		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + screenPass.label(), outputView, java.util.Optional.empty())) {
 			pass.setPipeline(screenPass.pipeline());
 			RenderSystem.bindDefaultUniforms(pass);
 			pass.setIndexBuffer(indices, indexType);
@@ -425,6 +471,7 @@ public final class IrisVulkanFinalPassRenderer {
 		return name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9/._-]", "_");
 	}
 
-	private record Pass(String name, RenderPipeline pipeline, int[] drawBuffers) {
+	private record Pass(String label, String name, RenderPipeline pipeline, int[] drawBuffers, List<String> samplers,
+						boolean collapseOutputs) {
 	}
 }

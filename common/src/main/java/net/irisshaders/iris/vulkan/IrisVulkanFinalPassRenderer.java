@@ -50,7 +50,9 @@ public final class IrisVulkanFinalPassRenderer {
 	private final Pass finalPass;
 	private final IrisNativeVulkan.ScreenPassMode mode;
 	private final Set<Pass> failedPasses = new HashSet<>();
+	private final Set<Pass> preflightedPasses = new HashSet<>();
 	private boolean loggedBuildOnlyFrame;
+	private boolean preflightComplete;
 
 	public IrisVulkanFinalPassRenderer(ProgramSet programSet) {
 		this.mode = IrisNativeVulkan.screenPassMode();
@@ -78,16 +80,6 @@ public final class IrisVulkanFinalPassRenderer {
 			return;
 		}
 
-		if (!mode.runsFinalPass()) {
-			if (!loggedBuildOnlyFrame) {
-				loggedBuildOnlyFrame = true;
-				Iris.logger.info("Native Vulkan screen pass graph is in {} mode; skipping draws.", mode.name().toLowerCase(Locale.ROOT));
-			}
-
-			IrisVulkanGbufferTargets.finishFrame();
-			return;
-		}
-
 		var main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 		GpuTexture colorTexture = main.getColorTexture();
 
@@ -104,10 +96,23 @@ public final class IrisVulkanFinalPassRenderer {
 
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		IrisVulkanGbufferTargets.ensureForFinalPass(encoder, colorTexture);
+		GpuTextureView depthView = main.getDepthTextureView();
+
+		if (!mode.runsFinalPass()) {
+			preflightScreenPasses(encoder, depthView);
+
+			if (!loggedBuildOnlyFrame) {
+				loggedBuildOnlyFrame = true;
+				Iris.logger.info("Native Vulkan screen pass graph is in {} mode; pipelines were preflighted without drawing.",
+					mode.name().toLowerCase(Locale.ROOT));
+			}
+
+			IrisVulkanGbufferTargets.finishFrame();
+			return;
+		}
 
 		GpuBuffer indices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).getBuffer(6);
 		IndexType indexType = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).type();
-		GpuTextureView depthView = main.getDepthTextureView();
 
 		for (Pass screenPass : deferredPasses) {
 			renderLogicalPassIfAvailable(encoder, screenPass, depthView, indices, indexType);
@@ -335,6 +340,78 @@ public final class IrisVulkanFinalPassRenderer {
 		}
 	}
 
+	private void preflightScreenPasses(CommandEncoder encoder, GpuTextureView depthView) {
+		if (preflightComplete) {
+			return;
+		}
+
+		for (Pass screenPass : deferredPasses) {
+			preflightLogicalPass(encoder, screenPass, depthView);
+		}
+
+		for (Pass screenPass : compositePasses) {
+			preflightLogicalPass(encoder, screenPass, depthView);
+		}
+
+		if (finalPass != null) {
+			preflightFinalPass(encoder, finalPass, depthView);
+		}
+
+		preflightComplete = true;
+	}
+
+	private void preflightLogicalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView) {
+		if (failedPasses.contains(screenPass) || preflightedPasses.contains(screenPass)) {
+			return;
+		}
+
+		RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Iris native Vulkan preflight " + screenPass.label());
+		GpuTextureView firstOutputView = null;
+
+		for (int logicalTarget : screenPass.drawBuffers()) {
+			GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(logicalTarget);
+
+			if (firstOutputView == null) {
+				firstOutputView = outputView;
+			}
+
+			descriptor.withColorAttachment(outputView);
+		}
+
+		if (firstOutputView != null) {
+			descriptor.withRenderArea(new RenderArea(0, 0, firstOutputView.getWidth(0), firstOutputView.getHeight(0)));
+		}
+
+		try (RenderPass pass = encoder.createRenderPass(descriptor)) {
+			preflightPass(screenPass, pass, depthView);
+		}
+	}
+
+	private void preflightFinalPass(CommandEncoder encoder, Pass screenPass, GpuTextureView depthView) {
+		if (failedPasses.contains(screenPass) || preflightedPasses.contains(screenPass)) {
+			return;
+		}
+
+		GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(FINAL_SOURCE_TARGET);
+
+		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan preflight " + screenPass.label(),
+			outputView, java.util.Optional.empty())) {
+			preflightPass(screenPass, pass, depthView);
+		}
+	}
+
+	private void preflightPass(Pass screenPass, RenderPass pass, GpuTextureView depthView) {
+		try {
+			pass.setPipeline(screenPass.pipeline());
+			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView);
+			preflightedPasses.add(screenPass);
+			Iris.logger.info("Preflighted native Vulkan screen pass {}.", screenPass.label());
+		} catch (RuntimeException e) {
+			failedPasses.add(screenPass);
+			Iris.logger.warn("Failed to preflight native Vulkan screen pass {}: {}", screenPass.label(), e.getMessage());
+		}
+	}
+
 	private boolean renderFinalPassIfAvailable(CommandEncoder encoder, Pass screenPass, GpuTextureView outputView,
 											   GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
 		if (failedPasses.contains(screenPass)) {
@@ -371,7 +448,7 @@ public final class IrisVulkanFinalPassRenderer {
 
 		try (RenderPass pass = encoder.createRenderPass(descriptor)) {
 			pass.setPipeline(screenPass.pipeline());
-			RenderSystem.bindDefaultUniforms(pass);
+			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);
@@ -386,7 +463,7 @@ public final class IrisVulkanFinalPassRenderer {
 								 GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + screenPass.label(), outputView, java.util.Optional.empty())) {
 			pass.setPipeline(screenPass.pipeline());
-			RenderSystem.bindDefaultUniforms(pass);
+			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);

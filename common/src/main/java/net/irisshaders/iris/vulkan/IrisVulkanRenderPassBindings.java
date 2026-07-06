@@ -74,6 +74,82 @@ public final class IrisVulkanRenderPassBindings {
 		bindTextureAliases(pass, backend, pipeline, colorAttachments);
 	}
 
+	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
+		RenderSystem.bindDefaultUniforms(pass);
+		bindScreenPassUniforms(pass, pipeline);
+		bindScreenPassTextures(pass, pipeline, depthView);
+	}
+
+	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline) {
+		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
+
+		for (BindGroupLayout.UniformDescription uniform : requiredUniforms) {
+			String name = uniform.name();
+
+			if (bindDefaultUniform(pass, name)) {
+				continue;
+			}
+
+			if (uniform.type() == com.mojang.blaze3d.shaders.UniformType.TEXEL_BUFFER) {
+				pass.setUniform(name, dummyTexelBuffer().slice());
+			} else {
+				pass.setUniform(name, dummyUniformBuffer().slice());
+			}
+
+			if (WARNED_MISSING_UNIFORMS.add(name)) {
+				Iris.logger.warn("Missing Vulkan screen pass uniform binding for {}; using a dummy buffer.", name);
+			}
+		}
+	}
+
+	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
+		List<String> requiredSamplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
+		java.util.HashSet<String> boundSamplers = new java.util.HashSet<>();
+
+		for (String sampler : requiredSamplers) {
+			if (!boundSamplers.add(sampler)) {
+				continue;
+			}
+
+			TextureBinding binding = screenPassTextureBinding(sampler, depthView);
+			pass.bindTexture(sampler, binding.view(), binding.sampler());
+		}
+	}
+
+	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView) {
+		if (sampler.equals("noisetex")) {
+			return noiseTextureBinding();
+		}
+
+		GpuSampler gpuSampler = IrisSamplers.getTerrainCache(1);
+		GpuTextureView targetView = IrisVulkanGbufferTargets.colorSamplerView(sampler);
+
+		if (targetView != null) {
+			return new TextureBinding(targetView, gpuSampler);
+		}
+
+		if ((sampler.equals("depthtex0") || sampler.equals("gdepthtex") || sampler.equals("depthtex1") || sampler.equals("depthtex2"))
+			&& depthView != null && !depthView.isClosed()) {
+			return new TextureBinding(depthView, gpuSampler);
+		}
+
+		if (isAlbedoSampler(sampler)) {
+			targetView = IrisVulkanGbufferTargets.colorSamplerView("colortex" + IrisVulkanGbufferTargets.FINAL_SOURCE_TARGET);
+
+			if (targetView != null) {
+				return new TextureBinding(targetView, gpuSampler);
+			}
+		}
+
+		TextureBinding dummy = dummyTextureBinding();
+
+		if (WARNED_MISSING_TEXTURES.add(sampler)) {
+			Iris.logger.warn("Missing Vulkan screen pass texture binding for {}; using a dummy texture.", sampler);
+		}
+
+		return dummy;
+	}
+
 	private static void bindUniformAliases(RenderPass pass, VulkanRenderPass backend, RenderPipeline pipeline) {
 		Map<String, GpuBufferSlice> uniforms = ((VKOnly_VulkanRenderPassAccessor) backend).iris$getUniforms();
 		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());

@@ -46,13 +46,12 @@ public final class IrisVulkanScreenPassExecutor {
 			gl_Position = vec4(Position.xy * 2.0 - 1.0, 0.0, 1.0);
 		}
 		""";
-	private static final String DIAGNOSTIC_COPY_FRAGMENT = """
-		#version 150
-
+	private static final String DIAGNOSTIC_COPY_FRAGMENT_BODY = """
+		
 		uniform sampler2D colortex3;
-
+		
 		out vec4 iris_fragColor;
-
+		
 		void main() {
 			vec2 iris_texCoord = gl_FragCoord.xy / vec2(textureSize(colortex3, 0));
 			iris_fragColor = texture(colortex3, iris_texCoord);
@@ -421,7 +420,7 @@ public final class IrisVulkanScreenPassExecutor {
 		if (packVertexCopyFragmentPipeline == null) {
 			packVertexCopyFragmentPipeline = createDiagnosticPipeline(PACK_VERTEX_COPY_FRAGMENT_LABEL);
 			IrisNativeVulkan.registerCustomPipelineSource(packVertexCopyFragmentPipeline, PACK_VERTEX_COPY_FRAGMENT_LABEL,
-				finalPass.vertexSource(), DIAGNOSTIC_COPY_FRAGMENT, true);
+				finalPass.vertexSource(), diagnosticCopyFragmentFor(finalPass.fragmentSource()), true);
 		}
 
 		return packVertexCopyFragmentPipeline;
@@ -447,7 +446,7 @@ public final class IrisVulkanScreenPassExecutor {
 		if (diagnosticCopyPipeline == null) {
 			diagnosticCopyPipeline = createDiagnosticPipeline(DIAGNOSTIC_COPY_LABEL);
 			IrisNativeVulkan.registerCustomPipelineSource(diagnosticCopyPipeline, DIAGNOSTIC_COPY_LABEL,
-				DIAGNOSTIC_COPY_VERTEX, DIAGNOSTIC_COPY_FRAGMENT, true);
+				DIAGNOSTIC_COPY_VERTEX, "#version 150\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY, true);
 		}
 
 		return diagnosticCopyPipeline;
@@ -484,9 +483,8 @@ public final class IrisVulkanScreenPassExecutor {
 			assignments.append(name).append(" = ").append(defaultVaryingExpression(type)).append(";\n");
 		}
 
-		return """
-			#version 150
-
+		return (versionDirective(fragmentSource) + """
+			
 			in vec3 Position;
 			in vec2 UV0;
 
@@ -496,7 +494,23 @@ public final class IrisVulkanScreenPassExecutor {
 				%s
 				gl_Position = vec4(Position.xy * 2.0 - 1.0, 0.0, 1.0);
 			}
-			""".formatted(declarations, assignments);
+			""".formatted(declarations, assignments));
+	}
+
+	private static String diagnosticCopyFragmentFor(String fragmentSource) {
+		return versionDirective(fragmentSource) + DIAGNOSTIC_COPY_FRAGMENT_BODY;
+	}
+
+	private static String versionDirective(String source) {
+		if (source != null) {
+			Matcher matcher = Pattern.compile("(?m)^\\s*#version\\s+[^\\r\\n]+").matcher(source);
+
+			if (matcher.find()) {
+				return matcher.group().trim() + "\n";
+			}
+		}
+
+		return "#version 150\n";
 	}
 
 	private static String defaultVaryingExpression(String type) {

@@ -305,6 +305,7 @@ public final class IrisNativeVulkan {
 
 		finalPassRenderedThisFrame = false;
 		IrisVulkanGbufferTargets.close();
+		IrisVulkanRenderPassBindings.closePackResources();
 	}
 
 	private static void loadShaderpackIfReady() {

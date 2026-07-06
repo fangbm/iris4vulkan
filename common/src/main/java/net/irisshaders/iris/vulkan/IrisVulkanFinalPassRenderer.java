@@ -261,7 +261,7 @@ public final class IrisVulkanFinalPassRenderer {
 		return switch (name) {
 			case "InSampler", "Sampler0", "u_MainSampler", "texture", "tex", "composite",
 				 "gcolor", "gdepth", "gnormal", "gaux1", "gaux2", "gaux3", "gaux4",
-				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex" -> true;
+				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex", "noisetex" -> true;
 			default -> false;
 		};
 	}

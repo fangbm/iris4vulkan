@@ -9,6 +9,8 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
@@ -18,12 +20,18 @@ import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.mixin.vulkan.VKOnly_TextureViewAndSamplerAccessor;
 import net.irisshaders.iris.mixin.vulkan.VKOnly_VulkanRenderPassAccessor;
 import net.irisshaders.iris.samplers.IrisSamplers;
+import net.irisshaders.iris.shaderpack.DimensionId;
+import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
+import net.irisshaders.iris.targets.backed.NativeImageBackedNoiseTexture;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 import org.joml.Vector4fc;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -41,8 +49,15 @@ public final class IrisVulkanRenderPassBindings {
 	private static GpuBuffer dummyTexelBuffer;
 	private static GpuTexture dummyTexture;
 	private static GpuTextureView dummyTextureView;
+	private static AbstractTexture noiseTexture;
+	private static GpuSampler noiseSampler;
+	private static int noiseTextureResolution = -1;
 
 	private IrisVulkanRenderPassBindings() {
+	}
+
+	public static void closePackResources() {
+		closeNoiseTexture();
 	}
 
 	public static void apply(RenderPass pass, VulkanRenderPass backend,
@@ -159,6 +174,10 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private static TextureBinding findTextureBinding(String sampler, Map<String, Object> textures) {
+		if (sampler.equals("noisetex")) {
+			return noiseTextureBinding();
+		}
+
 		if (isAlbedoSampler(sampler)) {
 			return firstTexture(textures, "Sampler0", "u_BlockTex", "u_MainSampler", "gtexture", "tex", "texture", "colortex0", "gcolor");
 		}
@@ -172,6 +191,63 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		return null;
+	}
+
+	private static TextureBinding noiseTextureBinding() {
+		int resolution = currentNoiseTextureResolution();
+
+		if (noiseTexture == null || noiseTexture.getTexture().isClosed()
+			|| noiseTexture.getTextureView() == null || noiseTexture.getTextureView().isClosed()
+			|| noiseTextureResolution != resolution) {
+			closeNoiseTexture();
+
+			NativeImageBackedNoiseTexture texture = new NativeImageBackedNoiseTexture(resolution);
+			texture.upload();
+			noiseTexture = texture;
+			noiseTextureResolution = resolution;
+			Iris.logger.info("Created native Vulkan noisetex at {}x{}.", resolution, resolution);
+		}
+
+		if (noiseSampler == null) {
+			noiseSampler = RenderSystem.getDevice().createSampler(AddressMode.REPEAT, AddressMode.REPEAT,
+				FilterMode.LINEAR, FilterMode.LINEAR, 0, OptionalDouble.empty());
+		}
+
+		return new TextureBinding(noiseTexture.getTextureView(), noiseSampler);
+	}
+
+	private static int currentNoiseTextureResolution() {
+		try {
+			Optional<ShaderPack> currentPack = Iris.getCurrentPack();
+
+			if (currentPack.isEmpty()) {
+				return 256;
+			}
+
+			NamespacedId dimension = Iris.getCurrentDimension();
+			if (dimension == null) {
+				dimension = DimensionId.OVERWORLD;
+			}
+
+			return Math.max(1, currentPack.get().getProgramSet(dimension).getPackDirectives().getNoiseTextureResolution());
+		} catch (RuntimeException e) {
+			Iris.logger.warn("Could not read shaderpack noisetex resolution for native Vulkan; using 256: {}", e.getMessage());
+			return 256;
+		}
+	}
+
+	private static void closeNoiseTexture() {
+		if (noiseTexture != null) {
+			noiseTexture.close();
+			noiseTexture = null;
+		}
+
+		if (noiseSampler != null) {
+			noiseSampler.close();
+			noiseSampler = null;
+		}
+
+		noiseTextureResolution = -1;
 	}
 
 	private static boolean isAlbedoSampler(String sampler) {

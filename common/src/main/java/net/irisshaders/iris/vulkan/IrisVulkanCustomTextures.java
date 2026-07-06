@@ -16,6 +16,7 @@ import net.irisshaders.iris.shaderpack.texture.TextureFilteringData;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
@@ -172,7 +173,11 @@ final class IrisVulkanCustomTextures {
 	}
 
 	private static Binding createPngTexture(String label, CustomTextureData.PngData data) throws IOException {
-		try (NativeImage image = NativeImage.read(data.getContent())) {
+		ByteBuffer buffer = ByteBuffer.allocateDirect(data.getContent().length);
+		buffer.put(data.getContent());
+		buffer.flip();
+
+		try (NativeImage image = NativeImage.read(NativeImage.Format.RGBA, buffer)) {
 			return createImageTexture(label, image, data.getFilteringData());
 		}
 	}

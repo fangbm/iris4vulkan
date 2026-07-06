@@ -657,6 +657,8 @@ public final class IrisNativeVulkan {
 	public enum ScreenPassDrawMode {
 		OFF(false, false),
 		COPY(true, false),
+		PACK_VERTEX_COPY_FRAGMENT(true, false),
+		COPY_VERTEX_PACK_FRAGMENT(true, false),
 		SHADERPACK(true, true);
 
 		private final boolean draws;
@@ -682,6 +684,10 @@ public final class IrisNativeVulkan {
 				return switch (configured.trim().toLowerCase(java.util.Locale.ROOT)) {
 					case "off", "false", "disabled", "none" -> OFF;
 					case "copy", "diagnostic", "passthrough", "pass-through" -> COPY;
+					case "pack_vertex_copy_fragment", "pack-vertex-copy-fragment", "vertex", "packvertex" ->
+						PACK_VERTEX_COPY_FRAGMENT;
+					case "copy_vertex_pack_fragment", "copy-vertex-pack-fragment", "fragment", "packfragment" ->
+						COPY_VERTEX_PACK_FRAGMENT;
 					case "shaderpack", "pack", "true", "enabled", "unsafe" -> SHADERPACK;
 					default -> OFF;
 				};

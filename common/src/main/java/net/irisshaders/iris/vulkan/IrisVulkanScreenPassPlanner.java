@@ -128,7 +128,8 @@ public final class IrisVulkanScreenPassPlanner {
 			transformed.get(PatchShaderType.VERTEX), fragment, collapseOutputs);
 
 		return new IrisVulkanScreenPassGraph.Node(kind, label, sourceName, drawBuffers, samplers,
-			collapseOutputs, pipeline, IrisVulkanScreenPassGraph.Status.READY, "");
+			collapseOutputs, pipeline, transformed.get(PatchShaderType.VERTEX), fragment,
+			IrisVulkanScreenPassGraph.Status.READY, "");
 	}
 
 	private static RenderPipeline createPipeline(String label, int drawBufferCount, boolean collapseOutputs) {
@@ -152,7 +153,7 @@ public final class IrisVulkanScreenPassPlanner {
 														 String sourceName, List<String> samplers,
 														 boolean collapseOutputs, String reason) {
 		return new IrisVulkanScreenPassGraph.Node(kind, label, sourceName, new int[0], samplers,
-			collapseOutputs, null, IrisVulkanScreenPassGraph.Status.SKIPPED, reason);
+			collapseOutputs, null, null, null, IrisVulkanScreenPassGraph.Status.SKIPPED, reason);
 	}
 
 	private static boolean usesUnsupportedSamplerType(String fragment) {

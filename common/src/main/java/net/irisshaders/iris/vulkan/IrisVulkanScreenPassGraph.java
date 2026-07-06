@@ -85,7 +85,8 @@ public final class IrisVulkanScreenPassGraph {
 	}
 
 	public record Node(Kind kind, String label, String sourceName, int[] drawBuffers, List<String> samplers,
-					   boolean collapseOutputs, RenderPipeline pipeline, Status status, String failureReason) {
+					   boolean collapseOutputs, RenderPipeline pipeline, String vertexSource, String fragmentSource,
+					   Status status, String failureReason) {
 		public Node {
 			drawBuffers = drawBuffers == null ? new int[0] : Arrays.copyOf(drawBuffers, drawBuffers.length);
 			samplers = samplers == null ? List.of() : List.copyOf(samplers);

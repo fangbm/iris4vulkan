@@ -75,12 +75,17 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
-		RenderSystem.bindDefaultUniforms(pass);
-		bindScreenPassUniforms(pass, pipeline);
-		bindScreenPassTextures(pass, pipeline, depthView);
+		bindScreenPassResources(pass, pipeline, depthView, "<unknown>");
 	}
 
-	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline) {
+	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
+											   String passLabel) {
+		RenderSystem.bindDefaultUniforms(pass);
+		bindScreenPassUniforms(pass, pipeline, passLabel);
+		bindScreenPassTextures(pass, pipeline, depthView, passLabel);
+	}
+
+	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline, String passLabel) {
 		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
 
 		for (BindGroupLayout.UniformDescription uniform : requiredUniforms) {
@@ -96,13 +101,15 @@ public final class IrisVulkanRenderPassBindings {
 				pass.setUniform(name, dummyUniformBuffer().slice());
 			}
 
-			if (WARNED_MISSING_UNIFORMS.add(name)) {
-				Iris.logger.warn("Missing Vulkan screen pass uniform binding for {}; using a dummy buffer.", name);
+			if (WARNED_MISSING_UNIFORMS.add("screen:" + passLabel + ":" + name)) {
+				Iris.logger.warn("Missing Vulkan screen pass {} uniform binding for {}; using a dummy buffer.",
+					passLabel, name);
 			}
 		}
 	}
 
-	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
+	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
+											   String passLabel) {
 		List<String> requiredSamplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
 		java.util.HashSet<String> boundSamplers = new java.util.HashSet<>();
 
@@ -111,12 +118,12 @@ public final class IrisVulkanRenderPassBindings {
 				continue;
 			}
 
-			TextureBinding binding = screenPassTextureBinding(sampler, depthView);
+			TextureBinding binding = screenPassTextureBinding(sampler, depthView, passLabel);
 			pass.bindTexture(sampler, binding.view(), binding.sampler());
 		}
 	}
 
-	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView) {
+	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView, String passLabel) {
 		if (sampler.equals("noisetex")) {
 			return noiseTextureBinding();
 		}
@@ -143,8 +150,9 @@ public final class IrisVulkanRenderPassBindings {
 
 		TextureBinding dummy = dummyTextureBinding();
 
-		if (WARNED_MISSING_TEXTURES.add(sampler)) {
-			Iris.logger.warn("Missing Vulkan screen pass texture binding for {}; using a dummy texture.", sampler);
+		if (WARNED_MISSING_TEXTURES.add("screen:" + passLabel + ":" + sampler)) {
+			Iris.logger.warn("Missing Vulkan screen pass {} texture binding for {}; using a dummy texture.",
+				passLabel, sampler);
 		}
 
 		return dummy;

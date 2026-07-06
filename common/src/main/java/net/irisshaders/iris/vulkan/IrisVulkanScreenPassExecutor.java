@@ -3,7 +3,6 @@ package net.irisshaders.iris.vulkan;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -245,7 +244,7 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		try (RenderPass pass = createPreflightRenderPass(encoder, screenPass)) {
-			bindPass(screenPass, pass, depthView);
+			pass.setPipeline(screenPass.pipeline());
 			preflightedPasses.add(screenPass);
 			Iris.logger.info("Preflighted native Vulkan screen pass {}.", screenPass.label());
 		} catch (RuntimeException e) {
@@ -388,8 +387,7 @@ public final class IrisVulkanScreenPassExecutor {
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + passLabel,
 			outputView, java.util.Optional.empty())) {
 			pass.setPipeline(pipeline);
-			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, pipeline, depthView,
-				passLabel, stageFor(screenPass.kind()));
+			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, passLabel, stageFor(screenPass.kind()), depthView);
 			logDrawAttempt(passLabel, pipeline);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
@@ -405,7 +403,9 @@ public final class IrisVulkanScreenPassExecutor {
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + DIAGNOSTIC_COPY_LABEL,
 			outputView, java.util.Optional.empty())) {
 			pass.setPipeline(pipeline);
-			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, pipeline, depthView, DIAGNOSTIC_COPY_LABEL);
+			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, DIAGNOSTIC_COPY_LABEL,
+				TextureStage.COMPOSITE_AND_FINAL, depthView);
+			logDrawAttempt(DIAGNOSTIC_COPY_LABEL, pipeline);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);
@@ -439,8 +439,8 @@ public final class IrisVulkanScreenPassExecutor {
 
 	private void bindPass(IrisVulkanScreenPassGraph.Node screenPass, RenderPass pass, GpuTextureView depthView) {
 		pass.setPipeline(screenPass.pipeline());
-		IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView,
-			screenPass.label(), stageFor(screenPass.kind()));
+		IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, screenPass.label(),
+			stageFor(screenPass.kind()), depthView);
 	}
 
 	private RenderPipeline diagnosticCopyPipeline() {
@@ -559,7 +559,8 @@ public final class IrisVulkanScreenPassExecutor {
 
 		Iris.logger.info("Drawing native Vulkan screen pass {} with pipeline {}, drawMode={}, samplers={}, dummySamplers={}.",
 			passLabel, pipeline.getLocation(), drawMode.name().toLowerCase(Locale.ROOT),
-			BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts()), IrisNativeVulkan.screenPassDummySamplers());
+			graph.finalPass() != null && passLabel.equals(diagnosticLabel()) ? graph.finalPass().samplers() : "<compiled>",
+			IrisNativeVulkan.screenPassDummySamplers());
 	}
 
 	private static TextureStage stageFor(IrisVulkanScreenPassGraph.Kind kind) {

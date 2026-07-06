@@ -25,10 +25,12 @@ import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.minecraft.client.Minecraft;
 import org.joml.Vector4fc;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class IrisVulkanRenderPassBindings {
@@ -42,6 +44,9 @@ public final class IrisVulkanRenderPassBindings {
 	private static final Set<String> WARNED_MISSING_TEXTURES = ConcurrentHashMap.newKeySet();
 	private static final Set<String> WARNED_MISSING_UNIFORMS = ConcurrentHashMap.newKeySet();
 	private static final Set<String> WARNED_DUMMY_TEXTURES = ConcurrentHashMap.newKeySet();
+	private static final Set<String> LOGGED_SCREEN_PASS_BINDINGS = ConcurrentHashMap.newKeySet();
+	private static final Map<RenderPass, ScreenPassContext> SCREEN_PASS_CONTEXTS =
+		Collections.synchronizedMap(new WeakHashMap<>());
 	private static GpuBuffer dummyUniformBuffer;
 	private static GpuBuffer dummyTexelBuffer;
 	private static GpuTexture dummyTexture;
@@ -63,9 +68,30 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		RenderPipeline pipeline = compiled.info();
+		ScreenPassContext screenPassContext = SCREEN_PASS_CONTEXTS.remove(pass);
+
+		if (screenPassContext != null) {
+			bindScreenPassResources(pass, pipeline, screenPassContext.depthView(),
+				screenPassContext.passLabel(), screenPassContext.stage());
+
+			if (LOGGED_SCREEN_PASS_BINDINGS.add(screenPassContext.passLabel())) {
+				Iris.logger.info("Bound native Vulkan screen pass {} with compiled pipeline {}, samplers={}, dummySamplers={}.",
+					screenPassContext.passLabel(), pipeline.getLocation(),
+					BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts()),
+					IrisNativeVulkan.screenPassDummySamplers());
+			}
+
+			return;
+		}
+
 		RenderSystem.bindDefaultUniforms(pass);
 		bindUniformAliases(pass, backend, pipeline);
 		bindTextureAliases(pass, backend, pipeline, colorAttachments);
+	}
+
+	public static void prepareScreenPassResources(RenderPass pass, String passLabel, TextureStage stage,
+												  GpuTextureView depthView) {
+		SCREEN_PASS_CONTEXTS.put(pass, new ScreenPassContext(passLabel, stage, depthView));
 	}
 
 	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
@@ -417,5 +443,8 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private record TextureBinding(GpuTextureView view, GpuSampler sampler) {
+	}
+
+	private record ScreenPassContext(String passLabel, TextureStage stage, GpuTextureView depthView) {
 	}
 }

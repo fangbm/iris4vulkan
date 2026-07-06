@@ -15,7 +15,6 @@ import net.irisshaders.iris.shaderpack.properties.CloudSetting;
 import net.irisshaders.iris.shaderpack.properties.ParticleRenderingSettings;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
-import net.irisshaders.iris.vulkan.IrisNativeVulkan;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
@@ -109,7 +108,7 @@ public class VanillaRenderingPipeline implements WorldRenderingPipeline {
 
 	@Override
 	public void finalizeLevelRendering() {
-		IrisNativeVulkan.renderFinalPassIfReady();
+		// stub: nothing to do here
 	}
 
 	@Override

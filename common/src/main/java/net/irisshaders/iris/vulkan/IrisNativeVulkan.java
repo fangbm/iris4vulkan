@@ -48,6 +48,7 @@ public final class IrisNativeVulkan {
 	private static NamespacedId finalPassDimension;
 	private static IrisVulkanFinalPassRenderer finalPassRenderer;
 	private static boolean finalPassFailed;
+	private static boolean finalPassRenderedThisFrame;
 	private static final Set<RenderPipeline> missingShaders = ConcurrentHashMap.newKeySet();
 	private static final Set<ShaderKey> mappedShaders = ConcurrentHashMap.newKeySet();
 	private static final Set<ShaderKey> unsupportedShaders = ConcurrentHashMap.newKeySet();
@@ -213,10 +214,17 @@ public final class IrisNativeVulkan {
 	}
 
 	public static void renderFinalPassIfReady() {
+		if (finalPassRenderedThisFrame) {
+			IrisVulkanGbufferTargets.finishFrame();
+			return;
+		}
+
 		if (!prepareFinalPassForFrame()) {
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
+
+		finalPassRenderedThisFrame = true;
 
 		try {
 			finalPassRenderer.render();
@@ -226,6 +234,11 @@ public final class IrisNativeVulkan {
 			destroyFinalPassRenderer();
 			Iris.logger.warn("Disabling Iris native Vulkan final pass for this shaderpack after an error: {}", e.getMessage());
 		}
+	}
+
+	public static boolean beginFinalPassFrame() {
+		finalPassRenderedThisFrame = false;
+		return prepareFinalPassForFrame();
 	}
 
 	public static boolean prepareFinalPassForFrame() {
@@ -290,6 +303,7 @@ public final class IrisNativeVulkan {
 			finalPassRenderer = null;
 		}
 
+		finalPassRenderedThisFrame = false;
 		IrisVulkanGbufferTargets.close();
 	}
 

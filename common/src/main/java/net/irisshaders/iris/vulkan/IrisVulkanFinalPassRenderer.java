@@ -50,15 +50,17 @@ public final class IrisVulkanFinalPassRenderer {
 	private final Set<Pass> failedPasses = new HashSet<>();
 
 	public IrisVulkanFinalPassRenderer(ProgramSet programSet) {
-		this.deferredPasses = createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred");
-		this.compositePasses = createPasses(programSet, ProgramArrayId.Composite, TextureStage.COMPOSITE_AND_FINAL, "composite");
 		this.finalPass = createFinalPass(programSet);
 
-		if (deferredPasses.isEmpty() && compositePasses.isEmpty() && finalPass == null) {
-			Iris.logger.info("Shaderpack has no supported native Vulkan screen passes.");
+		if (finalPass == null) {
+			this.deferredPasses = List.of();
+			this.compositePasses = List.of();
+			Iris.logger.info("Shaderpack has no supported native Vulkan final pass; screen pass chain is disabled.");
 		} else {
+			this.deferredPasses = createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred");
+			this.compositePasses = createPasses(programSet, ProgramArrayId.Composite, TextureStage.COMPOSITE_AND_FINAL, "composite");
 			Iris.logger.info("Registered {} native Vulkan deferred pass(es), {} composite pass(es){}.",
-				deferredPasses.size(), compositePasses.size(), finalPass == null ? "" : " plus final");
+				deferredPasses.size(), compositePasses.size(), " plus final");
 		}
 	}
 
@@ -124,7 +126,7 @@ public final class IrisVulkanFinalPassRenderer {
 	}
 
 	public boolean hasRunnablePasses() {
-		return !deferredPasses.isEmpty() || !compositePasses.isEmpty() || finalPass != null;
+		return finalPass != null;
 	}
 
 	private static List<Pass> createPasses(ProgramSet programSet, ProgramArrayId programArrayId,

@@ -33,7 +33,7 @@ public class VKOnly_MixinLevelRenderer_NativeVulkan {
 		CapturedRenderingState.INSTANCE.setTickDelta(deltaTracker.getGameTimeDeltaPartialTick(false));
 		Iris.getPipelineManager().preparePipeline(Iris.getCurrentDimension());
 
-		if (IrisNativeVulkan.prepareFinalPassForFrame()) {
+		if (IrisNativeVulkan.beginFinalPassFrame()) {
 			IrisVulkanGbufferTargets.beginFrameCapture();
 		}
 	}

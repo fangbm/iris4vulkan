@@ -27,6 +27,7 @@ public final class IrisVulkanScreenPassExecutor {
 	private final Set<IrisVulkanScreenPassGraph.Node> failedPasses = new HashSet<>();
 	private final Set<IrisVulkanScreenPassGraph.Node> preflightedPasses = new HashSet<>();
 	private boolean loggedBuildOnlyFrame;
+	private boolean loggedDrawDisabledFrame;
 	private boolean preflightComplete;
 
 	public IrisVulkanScreenPassExecutor(IrisVulkanScreenPassGraph graph, IrisNativeVulkan.ScreenPassMode mode,
@@ -75,6 +76,25 @@ public final class IrisVulkanScreenPassExecutor {
 			return;
 		}
 
+		if (!IrisNativeVulkan.drawShaderpackScreenPasses()) {
+			preflightScreenPasses(encoder, depthView);
+
+			if (!loggedDrawDisabledFrame) {
+				loggedDrawDisabledFrame = true;
+				Iris.logger.info("Native Vulkan screen pass graph is in {} mode, but shaderpack screen pass drawing is disabled. Set -Diris.vulkan.drawShaderpackScreenPasses=true to execute selected screen pass draws.",
+					mode.name().toLowerCase(Locale.ROOT));
+			}
+
+			if ((colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
+				GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
+				encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
+					colorTexture.getWidth(0), colorTexture.getHeight(0));
+			}
+
+			IrisVulkanGbufferTargets.finishFrame();
+			return;
+		}
+
 		GpuBuffer indices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).getBuffer(6);
 		IndexType indexType = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).type();
 
@@ -100,6 +120,10 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	public boolean requiresGbufferCapture() {
+		if (!IrisNativeVulkan.drawShaderpackScreenPasses()) {
+			return false;
+		}
+
 		if (!mode.runsLogicalPasses()) {
 			return false;
 		}

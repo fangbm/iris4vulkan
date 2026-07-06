@@ -41,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class IrisNativeVulkan {
 	private static final ScreenPassMode SCREEN_PASS_MODE = ScreenPassMode.fromProperties();
 	private static final String SELECTED_SCREEN_PASS = selectedScreenPassFromProperties();
+	private static final boolean DRAW_SHADERPACK_SCREEN_PASSES = Boolean.getBoolean("iris.vulkan.drawShaderpackScreenPasses");
 	private static boolean loggedRendererInit;
 	private static boolean loggedScreenPassesDisabled;
 	private static boolean attemptedInitialShaderpackLoad;
@@ -314,6 +315,10 @@ public final class IrisNativeVulkan {
 
 	public static String selectedScreenPassLabel() {
 		return SELECTED_SCREEN_PASS;
+	}
+
+	public static boolean drawShaderpackScreenPasses() {
+		return DRAW_SHADERPACK_SCREEN_PASSES;
 	}
 
 	private static boolean screenPassGraphEnabled() {

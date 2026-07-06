@@ -43,6 +43,7 @@ public final class IrisVulkanFinalPassRenderer {
 	private static final Pattern DRAWBUFFERS = Pattern.compile("DRAWBUFFERS\\s*:\\s*([0-9]+)");
 	private static final Pattern OUTPUT = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*out\\s+[A-Za-z_][A-Za-z0-9_]*\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;");
 	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+([iu]?sampler\\w+)\\s+(\\w+)\\s*(?:\\[[^]]+])?\\s*;");
+	private static final boolean RUN_LOGICAL_SCREEN_PASSES = false;
 
 	private final List<Pass> deferredPasses;
 	private final List<Pass> compositePasses;
@@ -56,6 +57,10 @@ public final class IrisVulkanFinalPassRenderer {
 			this.deferredPasses = List.of();
 			this.compositePasses = List.of();
 			Iris.logger.info("Shaderpack has no supported native Vulkan final pass; screen pass chain is disabled.");
+		} else if (!RUN_LOGICAL_SCREEN_PASSES) {
+			this.deferredPasses = List.of();
+			this.compositePasses = List.of();
+			Iris.logger.info("Registered native Vulkan final pass; deferred/composite screen passes are disabled for now.");
 		} else {
 			this.deferredPasses = createPasses(programSet, ProgramArrayId.Deferred, TextureStage.DEFERRED, "deferred");
 			this.compositePasses = createPasses(programSet, ProgramArrayId.Composite, TextureStage.COMPOSITE_AND_FINAL, "composite");

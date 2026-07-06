@@ -210,7 +210,7 @@ public final class IrisVulkanRenderPassBindings {
 
 		if (noiseSampler == null) {
 			noiseSampler = RenderSystem.getDevice().createSampler(AddressMode.REPEAT, AddressMode.REPEAT,
-				FilterMode.LINEAR, FilterMode.LINEAR, 0, OptionalDouble.empty());
+				FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty());
 		}
 
 		return new TextureBinding(noiseTexture.getTextureView(), noiseSampler);

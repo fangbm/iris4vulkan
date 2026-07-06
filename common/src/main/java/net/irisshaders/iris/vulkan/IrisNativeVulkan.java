@@ -41,7 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class IrisNativeVulkan {
 	private static final ScreenPassMode SCREEN_PASS_MODE = ScreenPassMode.fromProperties();
 	private static final String SELECTED_SCREEN_PASS = selectedScreenPassFromProperties();
-	private static final boolean DRAW_SHADERPACK_SCREEN_PASSES = Boolean.getBoolean("iris.vulkan.drawShaderpackScreenPasses");
+	private static final ScreenPassDrawMode SCREEN_PASS_DRAW_MODE = ScreenPassDrawMode.fromProperties();
 	private static boolean loggedRendererInit;
 	private static boolean loggedScreenPassesDisabled;
 	private static boolean attemptedInitialShaderpackLoad;
@@ -317,8 +317,12 @@ public final class IrisNativeVulkan {
 		return SELECTED_SCREEN_PASS;
 	}
 
+	public static ScreenPassDrawMode screenPassDrawMode() {
+		return SCREEN_PASS_DRAW_MODE;
+	}
+
 	public static boolean drawShaderpackScreenPasses() {
-		return DRAW_SHADERPACK_SCREEN_PASSES;
+		return SCREEN_PASS_DRAW_MODE.drawsShaderpack();
 	}
 
 	private static boolean screenPassGraphEnabled() {
@@ -647,6 +651,47 @@ public final class IrisNativeVulkan {
 			}
 
 			return BUILD_ONLY;
+		}
+	}
+
+	public enum ScreenPassDrawMode {
+		OFF(false, false),
+		COPY(true, false),
+		SHADERPACK(true, true);
+
+		private final boolean draws;
+		private final boolean drawsShaderpack;
+
+		ScreenPassDrawMode(boolean draws, boolean drawsShaderpack) {
+			this.draws = draws;
+			this.drawsShaderpack = drawsShaderpack;
+		}
+
+		public boolean draws() {
+			return draws;
+		}
+
+		public boolean drawsShaderpack() {
+			return drawsShaderpack;
+		}
+
+		private static ScreenPassDrawMode fromProperties() {
+			String configured = System.getProperty("iris.vulkan.screenPassDrawMode");
+
+			if (configured != null && !configured.isBlank()) {
+				return switch (configured.trim().toLowerCase(java.util.Locale.ROOT)) {
+					case "off", "false", "disabled", "none" -> OFF;
+					case "copy", "diagnostic", "passthrough", "pass-through" -> COPY;
+					case "shaderpack", "pack", "true", "enabled", "unsafe" -> SHADERPACK;
+					default -> OFF;
+				};
+			}
+
+			if (Boolean.getBoolean("iris.vulkan.drawShaderpackScreenPasses")) {
+				return SHADERPACK;
+			}
+
+			return OFF;
 		}
 	}
 }

@@ -23,6 +23,7 @@ public final class IrisVulkanFinalPassRenderer {
 	}
 
 	public void destroy() {
+		executor.destroy();
 		graph.destroy();
 	}
 

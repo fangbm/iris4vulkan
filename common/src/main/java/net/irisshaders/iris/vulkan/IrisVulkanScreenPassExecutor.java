@@ -3,6 +3,7 @@ package net.irisshaders.iris.vulkan;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -65,6 +66,7 @@ public final class IrisVulkanScreenPassExecutor {
 	private final String selectedPass;
 	private final Set<IrisVulkanScreenPassGraph.Node> failedPasses = new HashSet<>();
 	private final Set<IrisVulkanScreenPassGraph.Node> preflightedPasses = new HashSet<>();
+	private final Set<String> loggedDrawAttempts = new HashSet<>();
 	private RenderPipeline diagnosticCopyPipeline;
 	private RenderPipeline packVertexCopyFragmentPipeline;
 	private RenderPipeline copyVertexPackFragmentPipeline;
@@ -388,6 +390,7 @@ public final class IrisVulkanScreenPassExecutor {
 			pass.setPipeline(pipeline);
 			IrisVulkanRenderPassBindings.bindScreenPassResources(pass, pipeline, depthView,
 				passLabel, stageFor(screenPass.kind()));
+			logDrawAttempt(passLabel, pipeline);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
 			pass.drawIndexed(6, 1, 0, 0, 0);
@@ -547,6 +550,16 @@ public final class IrisVulkanScreenPassExecutor {
 			loggedCopyVertexPackFragmentFrame = true;
 			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and shaderpack fragment.");
 		}
+	}
+
+	private void logDrawAttempt(String passLabel, RenderPipeline pipeline) {
+		if (!loggedDrawAttempts.add(passLabel)) {
+			return;
+		}
+
+		Iris.logger.info("Drawing native Vulkan screen pass {} with pipeline {}, drawMode={}, samplers={}, dummySamplers={}.",
+			passLabel, pipeline.getLocation(), drawMode.name().toLowerCase(Locale.ROOT),
+			BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts()), IrisNativeVulkan.screenPassDummySamplers());
 	}
 
 	private static TextureStage stageFor(IrisVulkanScreenPassGraph.Kind kind) {

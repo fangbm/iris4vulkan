@@ -41,6 +41,7 @@ public final class IrisVulkanRenderPassBindings {
 	);
 	private static final Set<String> WARNED_MISSING_TEXTURES = ConcurrentHashMap.newKeySet();
 	private static final Set<String> WARNED_MISSING_UNIFORMS = ConcurrentHashMap.newKeySet();
+	private static final Set<String> WARNED_DUMMY_TEXTURES = ConcurrentHashMap.newKeySet();
 	private static GpuBuffer dummyUniformBuffer;
 	private static GpuBuffer dummyTexelBuffer;
 	private static GpuTexture dummyTexture;
@@ -123,6 +124,15 @@ public final class IrisVulkanRenderPassBindings {
 
 	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView, String passLabel,
 														  TextureStage stage) {
+		if (IrisNativeVulkan.shouldDummyScreenPassSampler(sampler)) {
+			if (WARNED_DUMMY_TEXTURES.add("screen:" + passLabel + ":" + sampler)) {
+				Iris.logger.warn("Using dummy Vulkan screen pass texture for {} sampler {} because iris.vulkan.screenPassDummySamplers={} is set.",
+					passLabel, sampler, IrisNativeVulkan.screenPassDummySamplers());
+			}
+
+			return dummyTextureBinding();
+		}
+
 		if (sampler.equals("noisetex")) {
 			return fromCustom(IrisVulkanCustomTextures.noise(currentNoiseTextureResolution()));
 		}

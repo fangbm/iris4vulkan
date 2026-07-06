@@ -325,6 +325,62 @@ public final class IrisNativeVulkan {
 		return SCREEN_PASS_DRAW_MODE.drawsShaderpack();
 	}
 
+	public static String screenPassDummySamplers() {
+		return System.getProperty("iris.vulkan.screenPassDummySamplers", "");
+	}
+
+	public static boolean shouldDummyScreenPassSampler(String sampler) {
+		String configured = screenPassDummySamplers();
+
+		if (configured == null || configured.isBlank()) {
+			return false;
+		}
+
+		String normalizedSampler = sampler.toLowerCase(java.util.Locale.ROOT);
+
+		for (String token : configured.split("[,; ]+")) {
+			String normalized = token.trim().toLowerCase(java.util.Locale.ROOT);
+
+			if (normalized.isEmpty() || normalized.equals("false") || normalized.equals("off") || normalized.equals("none")) {
+				continue;
+			}
+
+			if (normalized.equals("true") || normalized.equals("all") || normalized.equals("*")) {
+				return true;
+			}
+
+			if ((normalized.equals("depth") || normalized.equals("depthtex")) && normalizedSampler.startsWith("depthtex")) {
+				return true;
+			}
+
+			if (normalized.equals("depth") && normalizedSampler.equals("gdepthtex")) {
+				return true;
+			}
+
+			if ((normalized.equals("color") || normalized.equals("colortex")) && normalizedSampler.startsWith("colortex")) {
+				return true;
+			}
+
+			if ((normalized.equals("gbuffer") || normalized.equals("g")) && isLegacyGbufferSampler(normalizedSampler)) {
+				return true;
+			}
+
+			if ((normalized.equals("noise") || normalized.equals("noisetex")) && normalizedSampler.equals("noisetex")) {
+				return true;
+			}
+
+			if (normalized.equals("custom") && normalizedSampler.startsWith("custom")) {
+				return true;
+			}
+
+			if (normalizedSampler.equals(normalized)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private static boolean screenPassGraphEnabled() {
 		if (SCREEN_PASS_MODE.buildsGraph()) {
 			return true;
@@ -584,16 +640,49 @@ public final class IrisNativeVulkan {
 	}
 
 	private static void dumpFailedShaderSources(String name, IrisVulkanShaderResources.Prepared prepared) {
+		dumpShaderSources(name, prepared, "failed");
+	}
+
+	private static void dumpShaderSources(String name, IrisVulkanShaderResources.Prepared prepared, String reason) {
 		Path directory = Path.of("iris-vulkan-dumps");
+		String safeName = sanitizeDumpName(name);
 
 		try {
 			Files.createDirectories(directory);
-			Files.writeString(directory.resolve(name + ".vert.glsl"), prepared.vertex(), StandardCharsets.UTF_8);
-			Files.writeString(directory.resolve(name + ".frag.glsl"), prepared.fragment(), StandardCharsets.UTF_8);
-			Iris.logger.warn("Dumped failed Vulkan shader sources to {}", directory.toAbsolutePath());
+			Files.writeString(directory.resolve(safeName + ".vert.glsl"), prepared.vertex(), StandardCharsets.UTF_8);
+			Files.writeString(directory.resolve(safeName + ".frag.glsl"), prepared.fragment(), StandardCharsets.UTF_8);
+			Iris.logger.warn("Dumped {} Vulkan shader sources to {}", reason, directory.toAbsolutePath());
 		} catch (IOException e) {
 			Iris.logger.warn("Could not dump failed Vulkan shader sources: {}", e.getMessage());
 		}
+	}
+
+	private static String sanitizeDumpName(String name) {
+		return name.replace('\\', '_')
+			.replace('/', '_')
+			.replace(':', '_')
+			.replace('*', '_')
+			.replace('?', '_')
+			.replace('"', '_')
+			.replace('<', '_')
+			.replace('>', '_')
+			.replace('|', '_');
+	}
+
+	private static boolean isLegacyGbufferSampler(String sampler) {
+		return sampler.equals("gcolor")
+			|| sampler.equals("gdepth")
+			|| sampler.equals("gnormal")
+			|| sampler.equals("gaux1")
+			|| sampler.equals("gaux2")
+			|| sampler.equals("gaux3")
+			|| sampler.equals("gaux4")
+			|| sampler.equals("composite")
+			|| sampler.equals("insampler")
+			|| sampler.equals("sampler0")
+			|| sampler.equals("u_mainsampler")
+			|| sampler.equals("texture")
+			|| sampler.equals("tex");
 	}
 
 	private record CacheKey(VulkanDevice device, RenderPipeline renderPipeline, Object source) {

@@ -84,10 +84,13 @@ public final class IrisVulkanScreenPassExecutor {
 			}
 		}
 
-		boolean renderedFinal = renderSelectedFinalPassIfAvailable(encoder, main.getColorTextureView(), depthView,
-			indices, indexType);
+		boolean renderedFinal = renderSelectedFinalPassIfAvailable(encoder, depthView, indices, indexType);
 
-		if (!renderedFinal && (colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
+		if (renderedFinal) {
+			IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
+		}
+
+		if ((colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
 			GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
 			encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
 				colorTexture.getWidth(0), colorTexture.getHeight(0));
@@ -179,8 +182,8 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 	}
 
-	private boolean renderSelectedFinalPassIfAvailable(CommandEncoder encoder, GpuTextureView outputView,
-													   GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+	private boolean renderSelectedFinalPassIfAvailable(CommandEncoder encoder, GpuTextureView depthView,
+													   GpuBuffer indices, IndexType indexType) {
 		IrisVulkanScreenPassGraph.Node finalPass = graph.finalPass();
 
 		if (finalPass == null || !finalPass.ready() || failedPasses.contains(finalPass) || !matchesSelection(finalPass)) {
@@ -188,7 +191,7 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		try {
-			renderFinalPass(encoder, finalPass, outputView, depthView, indices, indexType);
+			renderFinalPass(encoder, finalPass, depthView, indices, indexType);
 			return true;
 		} catch (RuntimeException e) {
 			failedPasses.add(finalPass);
@@ -229,8 +232,9 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private void renderFinalPass(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
-								 GpuTextureView outputView, GpuTextureView depthView,
-								 GpuBuffer indices, IndexType indexType) {
+								 GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+		GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(FINAL_SOURCE_TARGET);
+
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + screenPass.label(),
 			outputView, java.util.Optional.empty())) {
 			bindPass(screenPass, pass, depthView);

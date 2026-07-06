@@ -39,7 +39,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class IrisNativeVulkan {
+	private static final boolean ENABLE_EXPERIMENTAL_SCREEN_PASSES = Boolean.getBoolean("iris.vulkan.experimentalScreenPasses");
 	private static boolean loggedRendererInit;
+	private static boolean loggedScreenPassesDisabled;
 	private static boolean attemptedInitialShaderpackLoad;
 	private static ShaderPack sourcePack;
 	private static NamespacedId sourceDimension;
@@ -246,6 +248,11 @@ public final class IrisNativeVulkan {
 			return false;
 		}
 
+		if (!experimentalScreenPassesEnabled()) {
+			destroyFinalPassRenderer();
+			return false;
+		}
+
 		loadShaderpackIfReady();
 		Optional<ShaderPack> currentPack = Iris.getCurrentPack();
 
@@ -294,7 +301,23 @@ public final class IrisNativeVulkan {
 	}
 
 	public static boolean shouldCaptureGbuffers() {
-		return !finalPassFailed && finalPassRenderer != null && finalPassRenderer.requiresGbufferCapture();
+		return ENABLE_EXPERIMENTAL_SCREEN_PASSES
+			&& !finalPassFailed
+			&& finalPassRenderer != null
+			&& finalPassRenderer.requiresGbufferCapture();
+	}
+
+	private static boolean experimentalScreenPassesEnabled() {
+		if (ENABLE_EXPERIMENTAL_SCREEN_PASSES) {
+			return true;
+		}
+
+		if (!loggedScreenPassesDisabled) {
+			loggedScreenPassesDisabled = true;
+			Iris.logger.info("Iris native Vulkan shaderpack screen passes are disabled while the pass graph is being rebuilt.");
+		}
+
+		return false;
 	}
 
 	private static void destroyFinalPassRenderer() {

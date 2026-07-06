@@ -107,7 +107,7 @@ public final class IrisVulkanScreenPassPlanner {
 				"unsupported non-2D sampler type");
 		}
 
-		List<String> unsupportedSamplers = unsupportedSamplers(fragment);
+		List<String> unsupportedSamplers = unsupportedSamplers(fragment, programSet, stage);
 		if (!unsupportedSamplers.isEmpty()) {
 			return skipped(kind, label, sourceName, samplers, collapseOutputs,
 				"unsupported sampler(s) " + unsupportedSamplers);
@@ -165,7 +165,7 @@ public final class IrisVulkanScreenPassPlanner {
 			|| fragment.contains("sampler2DShadow");
 	}
 
-	private static List<String> unsupportedSamplers(String fragment) {
+	private static List<String> unsupportedSamplers(String fragment, ProgramSet programSet, TextureStage stage) {
 		Matcher matcher = SAMPLER.matcher(fragment);
 		List<String> unsupported = new ArrayList<>();
 
@@ -173,7 +173,7 @@ public final class IrisVulkanScreenPassPlanner {
 			String type = matcher.group(1);
 			String name = matcher.group(2);
 
-			if (!isSupportedSamplerType(type) || !isSupportedSamplerName(name)) {
+			if (!isSupportedSamplerType(type) || !isSupportedSamplerName(name, programSet, stage)) {
 				unsupported.add(name);
 			}
 		}
@@ -196,7 +196,7 @@ public final class IrisVulkanScreenPassPlanner {
 		return type.equals("sampler2D") || type.equals("isampler2D") || type.equals("usampler2D");
 	}
 
-	private static boolean isSupportedSamplerName(String name) {
+	private static boolean isSupportedSamplerName(String name, ProgramSet programSet, TextureStage stage) {
 		if (name.startsWith("colortex")) {
 			try {
 				int index = Integer.parseInt(name.substring("colortex".length()));
@@ -210,7 +210,7 @@ public final class IrisVulkanScreenPassPlanner {
 			case "InSampler", "Sampler0", "u_MainSampler", "texture", "tex", "composite",
 				 "gcolor", "gdepth", "gnormal", "gaux1", "gaux2", "gaux3", "gaux4",
 				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex", "noisetex" -> true;
-			default -> false;
+			default -> IrisVulkanCustomTextures.supports(programSet.getPack(), stage, name);
 		};
 	}
 

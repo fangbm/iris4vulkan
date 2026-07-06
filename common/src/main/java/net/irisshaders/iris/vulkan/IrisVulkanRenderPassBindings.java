@@ -9,8 +9,6 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
@@ -23,15 +21,13 @@ import net.irisshaders.iris.samplers.IrisSamplers;
 import net.irisshaders.iris.shaderpack.DimensionId;
 import net.irisshaders.iris.shaderpack.ShaderPack;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
-import net.irisshaders.iris.targets.backed.NativeImageBackedNoiseTexture;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.texture.AbstractTexture;
 import org.joml.Vector4fc;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -49,15 +45,12 @@ public final class IrisVulkanRenderPassBindings {
 	private static GpuBuffer dummyTexelBuffer;
 	private static GpuTexture dummyTexture;
 	private static GpuTextureView dummyTextureView;
-	private static AbstractTexture noiseTexture;
-	private static GpuSampler noiseSampler;
-	private static int noiseTextureResolution = -1;
 
 	private IrisVulkanRenderPassBindings() {
 	}
 
 	public static void closePackResources() {
-		closeNoiseTexture();
+		IrisVulkanCustomTextures.close();
 	}
 
 	public static void apply(RenderPass pass, VulkanRenderPass backend,
@@ -80,9 +73,14 @@ public final class IrisVulkanRenderPassBindings {
 
 	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
 											   String passLabel) {
+		bindScreenPassResources(pass, pipeline, depthView, passLabel, TextureStage.COMPOSITE_AND_FINAL);
+	}
+
+	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
+											   String passLabel, TextureStage stage) {
 		RenderSystem.bindDefaultUniforms(pass);
 		bindScreenPassUniforms(pass, pipeline, passLabel);
-		bindScreenPassTextures(pass, pipeline, depthView, passLabel);
+		bindScreenPassTextures(pass, pipeline, depthView, passLabel, stage);
 	}
 
 	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline, String passLabel) {
@@ -109,7 +107,7 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
-											   String passLabel) {
+											   String passLabel, TextureStage stage) {
 		List<String> requiredSamplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
 		java.util.HashSet<String> boundSamplers = new java.util.HashSet<>();
 
@@ -118,14 +116,21 @@ public final class IrisVulkanRenderPassBindings {
 				continue;
 			}
 
-			TextureBinding binding = screenPassTextureBinding(sampler, depthView, passLabel);
+			TextureBinding binding = screenPassTextureBinding(sampler, depthView, passLabel, stage);
 			pass.bindTexture(sampler, binding.view(), binding.sampler());
 		}
 	}
 
-	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView, String passLabel) {
+	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView, String passLabel,
+														  TextureStage stage) {
 		if (sampler.equals("noisetex")) {
-			return noiseTextureBinding();
+			return fromCustom(IrisVulkanCustomTextures.noise(currentNoiseTextureResolution()));
+		}
+
+		IrisVulkanCustomTextures.Binding customBinding = IrisVulkanCustomTextures.find(stage, sampler);
+
+		if (customBinding != null) {
+			return fromCustom(customBinding);
 		}
 
 		GpuSampler gpuSampler = IrisSamplers.getTerrainCache(1);
@@ -156,6 +161,10 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		return dummy;
+	}
+
+	private static TextureBinding fromCustom(IrisVulkanCustomTextures.Binding binding) {
+		return new TextureBinding(binding.view(), binding.sampler());
 	}
 
 	private static void bindUniformAliases(RenderPass pass, VulkanRenderPass backend, RenderPipeline pipeline) {
@@ -259,7 +268,7 @@ public final class IrisVulkanRenderPassBindings {
 
 	private static TextureBinding findTextureBinding(String sampler, Map<String, Object> textures) {
 		if (sampler.equals("noisetex")) {
-			return noiseTextureBinding();
+			return fromCustom(IrisVulkanCustomTextures.noise(currentNoiseTextureResolution()));
 		}
 
 		if (isAlbedoSampler(sampler)) {
@@ -275,29 +284,6 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		return null;
-	}
-
-	private static TextureBinding noiseTextureBinding() {
-		int resolution = currentNoiseTextureResolution();
-
-		if (noiseTexture == null || noiseTexture.getTexture().isClosed()
-			|| noiseTexture.getTextureView() == null || noiseTexture.getTextureView().isClosed()
-			|| noiseTextureResolution != resolution) {
-			closeNoiseTexture();
-
-			NativeImageBackedNoiseTexture texture = new NativeImageBackedNoiseTexture(resolution);
-			texture.upload();
-			noiseTexture = texture;
-			noiseTextureResolution = resolution;
-			Iris.logger.info("Created native Vulkan noisetex at {}x{}.", resolution, resolution);
-		}
-
-		if (noiseSampler == null) {
-			noiseSampler = RenderSystem.getDevice().createSampler(AddressMode.REPEAT, AddressMode.REPEAT,
-				FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty());
-		}
-
-		return new TextureBinding(noiseTexture.getTextureView(), noiseSampler);
 	}
 
 	private static int currentNoiseTextureResolution() {
@@ -318,20 +304,6 @@ public final class IrisVulkanRenderPassBindings {
 			Iris.logger.warn("Could not read shaderpack noisetex resolution for native Vulkan; using 256: {}", e.getMessage());
 			return 256;
 		}
-	}
-
-	private static void closeNoiseTexture() {
-		if (noiseTexture != null) {
-			noiseTexture.close();
-			noiseTexture = null;
-		}
-
-		if (noiseSampler != null) {
-			noiseSampler.close();
-			noiseSampler = null;
-		}
-
-		noiseTextureResolution = -1;
 	}
 
 	private static boolean isAlbedoSampler(String sampler) {

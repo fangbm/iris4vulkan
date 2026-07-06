@@ -17,6 +17,7 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.pathways.FullScreenQuadRenderer;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 
@@ -342,7 +343,8 @@ public final class IrisVulkanScreenPassExecutor {
 
 	private void bindPass(IrisVulkanScreenPassGraph.Node screenPass, RenderPass pass, GpuTextureView depthView) {
 		pass.setPipeline(screenPass.pipeline());
-		IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView, screenPass.label());
+		IrisVulkanRenderPassBindings.bindScreenPassResources(pass, screenPass.pipeline(), depthView,
+			screenPass.label(), stageFor(screenPass.kind()));
 	}
 
 	private RenderPipeline diagnosticCopyPipeline() {
@@ -378,6 +380,12 @@ public final class IrisVulkanScreenPassExecutor {
 			|| selectedPass.equals("copy")
 			|| selectedPass.equals(DIAGNOSTIC_COPY_LABEL)
 			|| selectedPass.equals("diagnostic");
+	}
+
+	private static TextureStage stageFor(IrisVulkanScreenPassGraph.Kind kind) {
+		return kind == IrisVulkanScreenPassGraph.Kind.DEFERRED
+			? TextureStage.DEFERRED
+			: TextureStage.COMPOSITE_AND_FINAL;
 	}
 
 	private boolean matchesSelection(IrisVulkanScreenPassGraph.Node node) {

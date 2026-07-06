@@ -585,6 +585,10 @@ public final class IrisNativeVulkan {
 			source.collapseFragmentOutputs());
 
 		try {
+			if (Boolean.getBoolean("iris.vulkan.dumpCustomScreenPassShaders")) {
+				dumpShaderSources(name, prepared, "prepared");
+			}
+
 			try (IntermediaryShaderModule vertexModule = compiler.createIntermediary(name + "_vertex", prepared.vertex(), ShaderType.VERTEX);
 				 IntermediaryShaderModule fragmentModule = compiler.createIntermediary(name + "_fragment", prepared.fragment(), ShaderType.FRAGMENT)) {
 				GlslCompiler.CompiledModules modules = compiler.compile(device, prepared.pipeline(), vertexModule, fragmentModule);
@@ -748,6 +752,7 @@ public final class IrisNativeVulkan {
 		COPY(true, false),
 		PACK_VERTEX_COPY_FRAGMENT(true, false),
 		COPY_VERTEX_PACK_FRAGMENT(true, false),
+		COPY_VERTEX_FINAL_CONSTANT_FRAGMENT(true, false),
 		SHADERPACK(true, true);
 
 		private final boolean draws;
@@ -777,6 +782,9 @@ public final class IrisNativeVulkan {
 						PACK_VERTEX_COPY_FRAGMENT;
 					case "copy_vertex_pack_fragment", "copy-vertex-pack-fragment", "fragment", "packfragment" ->
 						COPY_VERTEX_PACK_FRAGMENT;
+					case "copy_vertex_final_constant_fragment", "copy-vertex-final-constant-fragment",
+						 "final_constant", "final-constant", "constant", "constant-fragment" ->
+						COPY_VERTEX_FINAL_CONSTANT_FRAGMENT;
 					case "shaderpack", "pack", "true", "enabled", "unsafe" -> SHADERPACK;
 					default -> OFF;
 				};

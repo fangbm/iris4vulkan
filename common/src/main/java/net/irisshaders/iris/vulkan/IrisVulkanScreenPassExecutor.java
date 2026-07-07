@@ -33,6 +33,7 @@ public final class IrisVulkanScreenPassExecutor {
 	private static final String PACK_VERTEX_COPY_FRAGMENT_LABEL = "diagnostic/pack_vertex_copy_fragment";
 	private static final String COPY_VERTEX_PACK_FRAGMENT_LABEL = "diagnostic/copy_vertex_pack_fragment";
 	private static final String COPY_VERTEX_FINAL_CONSTANT_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_constant_fragment";
+	private static final String COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texelfetch_fragment";
 	private static final Pattern FRAGMENT_INPUT = Pattern.compile("(?m)^\\s*((?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*)in\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\[[^]]+])?\\s*;");
 	private static final String DIAGNOSTIC_COPY_VERTEX = """
 		#version 150
@@ -70,12 +71,14 @@ public final class IrisVulkanScreenPassExecutor {
 	private RenderPipeline packVertexCopyFragmentPipeline;
 	private RenderPipeline copyVertexPackFragmentPipeline;
 	private RenderPipeline copyVertexFinalConstantFragmentPipeline;
+	private RenderPipeline copyVertexFinalTexelFetchFragmentPipeline;
 	private boolean loggedBuildOnlyFrame;
 	private boolean loggedDrawDisabledFrame;
 	private boolean loggedDiagnosticCopyFrame;
 	private boolean loggedPackVertexCopyFragmentFrame;
 	private boolean loggedCopyVertexPackFragmentFrame;
 	private boolean loggedCopyVertexFinalConstantFragmentFrame;
+	private boolean loggedCopyVertexFinalTexelFetchFragmentFrame;
 	private boolean preflightComplete;
 
 	public IrisVulkanScreenPassExecutor(IrisVulkanScreenPassGraph graph, IrisNativeVulkan.ScreenPassMode mode,
@@ -107,6 +110,11 @@ public final class IrisVulkanScreenPassExecutor {
 		if (copyVertexFinalConstantFragmentPipeline != null) {
 			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalConstantFragmentPipeline);
 			copyVertexFinalConstantFragmentPipeline = null;
+		}
+
+		if (copyVertexFinalTexelFetchFragmentPipeline != null) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalTexelFetchFragmentPipeline);
+			copyVertexFinalTexelFetchFragmentPipeline = null;
 		}
 	}
 
@@ -184,7 +192,8 @@ public final class IrisVulkanScreenPassExecutor {
 
 		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.PACK_VERTEX_COPY_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_PACK_FRAGMENT
-			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_CONSTANT_FRAGMENT) {
+			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_CONSTANT_FRAGMENT
+			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT) {
 			preflightScreenPasses(encoder, depthView);
 
 			boolean renderedFinal = renderDiagnosticFinalVariantIfAvailable(encoder, depthView, indices, indexType);
@@ -332,6 +341,7 @@ public final class IrisVulkanScreenPassExecutor {
 			case PACK_VERTEX_COPY_FRAGMENT -> packVertexCopyFragmentPipeline(finalPass);
 			case COPY_VERTEX_PACK_FRAGMENT -> copyVertexPackFragmentPipeline(finalPass);
 			case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> copyVertexFinalConstantFragmentPipeline(finalPass);
+			case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> copyVertexFinalTexelFetchFragmentPipeline(finalPass);
 			default -> null;
 		};
 
@@ -457,6 +467,17 @@ public final class IrisVulkanScreenPassExecutor {
 		return copyVertexFinalConstantFragmentPipeline;
 	}
 
+	private RenderPipeline copyVertexFinalTexelFetchFragmentPipeline(IrisVulkanScreenPassGraph.Node finalPass) {
+		if (copyVertexFinalTexelFetchFragmentPipeline == null) {
+			copyVertexFinalTexelFetchFragmentPipeline = createDiagnosticPipeline(COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL);
+			IrisNativeVulkan.registerCustomPipelineSource(copyVertexFinalTexelFetchFragmentPipeline,
+				COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL, copyVertexForFragment(finalPass.fragmentSource()),
+				finalTexelFetchFragmentFor(finalPass.fragmentSource()), true);
+		}
+
+		return copyVertexFinalTexelFetchFragmentPipeline;
+	}
+
 	private void bindPass(IrisVulkanScreenPassGraph.Node screenPass, RenderPass pass, GpuTextureView depthView) {
 		pass.setPipeline(screenPass.pipeline());
 		IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, screenPass.label(),
@@ -533,6 +554,19 @@ public final class IrisVulkanScreenPassExecutor {
 			""";
 	}
 
+	private static String finalTexelFetchFragmentFor(String fragmentSource) {
+		return versionDirective(fragmentSource) + """
+
+			uniform sampler2D colortex3;
+
+			out vec3 finalData;
+
+			void main() {
+				finalData = texelFetch(colortex3, ivec2(gl_FragCoord.xy), 0).rgb;
+			}
+			""";
+	}
+
 	private static String versionDirective(String source) {
 		if (source != null) {
 			Matcher matcher = Pattern.compile("(?m)^\\s*#version\\s+[^\\r\\n]+").matcher(source);
@@ -584,6 +618,7 @@ public final class IrisVulkanScreenPassExecutor {
 		return switch (drawMode) {
 			case PACK_VERTEX_COPY_FRAGMENT -> PACK_VERTEX_COPY_FRAGMENT_LABEL;
 			case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> COPY_VERTEX_FINAL_CONSTANT_FRAGMENT_LABEL;
+			case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL;
 			default -> COPY_VERTEX_PACK_FRAGMENT_LABEL;
 		};
 	}
@@ -603,6 +638,12 @@ public final class IrisVulkanScreenPassExecutor {
 			&& !loggedCopyVertexFinalConstantFragmentFrame) {
 			loggedCopyVertexFinalConstantFragmentFrame = true;
 			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and constant final fragment.");
+		}
+
+		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT
+			&& !loggedCopyVertexFinalTexelFetchFragmentFrame) {
+			loggedCopyVertexFinalTexelFetchFragmentFrame = true;
+			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and final texelFetch fragment.");
 		}
 	}
 

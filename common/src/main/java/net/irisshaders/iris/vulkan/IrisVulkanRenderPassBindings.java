@@ -71,7 +71,7 @@ public final class IrisVulkanRenderPassBindings {
 		ScreenPassContext screenPassContext = SCREEN_PASS_CONTEXTS.remove(pass);
 
 		if (screenPassContext != null) {
-			bindScreenPassResources(pass, pipeline, screenPassContext.depthView(),
+			bindScreenPassResources(pass, pipeline, screenPassContext.depthView(), screenPassContext.finalSourceView(),
 				screenPassContext.passLabel(), screenPassContext.stage());
 
 			if (LOGGED_SCREEN_PASS_BINDINGS.add(screenPassContext.passLabel())) {
@@ -91,7 +91,12 @@ public final class IrisVulkanRenderPassBindings {
 
 	public static void prepareScreenPassResources(RenderPass pass, String passLabel, TextureStage stage,
 												  GpuTextureView depthView) {
-		SCREEN_PASS_CONTEXTS.put(pass, new ScreenPassContext(passLabel, stage, depthView));
+		prepareScreenPassResources(pass, passLabel, stage, depthView, null);
+	}
+
+	public static void prepareScreenPassResources(RenderPass pass, String passLabel, TextureStage stage,
+												  GpuTextureView depthView, GpuTextureView finalSourceView) {
+		SCREEN_PASS_CONTEXTS.put(pass, new ScreenPassContext(passLabel, stage, depthView, finalSourceView));
 	}
 
 	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView) {
@@ -105,9 +110,14 @@ public final class IrisVulkanRenderPassBindings {
 
 	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
 											   String passLabel, TextureStage stage) {
+		bindScreenPassResources(pass, pipeline, depthView, null, passLabel, stage);
+	}
+
+	public static void bindScreenPassResources(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
+											   GpuTextureView finalSourceView, String passLabel, TextureStage stage) {
 		RenderSystem.bindDefaultUniforms(pass);
 		bindScreenPassUniforms(pass, pipeline, passLabel);
-		bindScreenPassTextures(pass, pipeline, depthView, passLabel, stage);
+		bindScreenPassTextures(pass, pipeline, depthView, finalSourceView, passLabel, stage);
 	}
 
 	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline, String passLabel) {
@@ -134,7 +144,7 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
-											   String passLabel, TextureStage stage) {
+											   GpuTextureView finalSourceView, String passLabel, TextureStage stage) {
 		List<String> requiredSamplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
 		java.util.HashSet<String> boundSamplers = new java.util.HashSet<>();
 
@@ -143,12 +153,18 @@ public final class IrisVulkanRenderPassBindings {
 				continue;
 			}
 
-			TextureBinding binding = screenPassTextureBinding(sampler, depthView, passLabel, stage);
+			TextureBinding binding = screenPassTextureBinding(sampler, depthView, finalSourceView, passLabel, stage);
 			pass.bindTexture(sampler, binding.view(), binding.sampler());
 		}
 	}
 
 	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView, String passLabel,
+														  TextureStage stage) {
+		return screenPassTextureBinding(sampler, depthView, null, passLabel, stage);
+	}
+
+	private static TextureBinding screenPassTextureBinding(String sampler, GpuTextureView depthView,
+														  GpuTextureView finalSourceView, String passLabel,
 														  TextureStage stage) {
 		if (IrisNativeVulkan.shouldDummyScreenPassSampler(sampler)) {
 			if (WARNED_DUMMY_TEXTURES.add("screen:" + passLabel + ":" + sampler)) {
@@ -170,6 +186,11 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		GpuSampler gpuSampler = IrisSamplers.getTerrainCache(1);
+
+		if (isFinalSourceSampler(sampler) && finalSourceView != null && !finalSourceView.isClosed()) {
+			return new TextureBinding(finalSourceView, gpuSampler);
+		}
+
 		GpuTextureView targetView = IrisVulkanGbufferTargets.colorSamplerView(sampler);
 
 		if (targetView != null) {
@@ -197,6 +218,12 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		return dummy;
+	}
+
+	private static boolean isFinalSourceSampler(String sampler) {
+		return sampler.equals("colortex" + IrisVulkanGbufferTargets.FINAL_SOURCE_TARGET)
+			|| sampler.equals("gnormal")
+			|| sampler.equals("gaux3");
 	}
 
 	private static TextureBinding fromCustom(IrisVulkanCustomTextures.Binding binding) {
@@ -445,6 +472,7 @@ public final class IrisVulkanRenderPassBindings {
 	private record TextureBinding(GpuTextureView view, GpuSampler sampler) {
 	}
 
-	private record ScreenPassContext(String passLabel, TextureStage stage, GpuTextureView depthView) {
+	private record ScreenPassContext(String passLabel, TextureStage stage, GpuTextureView depthView,
+									 GpuTextureView finalSourceView) {
 	}
 }

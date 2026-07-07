@@ -85,6 +85,8 @@ public final class IrisVulkanScreenPassExecutor {
 	private boolean loggedCopyVertexFinalTexelFetchFragmentFrame;
 	private boolean loggedCopyVertexFinalTexelFetchRawFragmentFrame;
 	private boolean loggedCopyVertexFinalTextureFragmentFrame;
+	private boolean loggedDirectFinalSourceFrame;
+	private boolean loggedFallbackFinalSourceFrame;
 	private boolean preflightComplete;
 
 	public IrisVulkanScreenPassExecutor(IrisVulkanScreenPassGraph graph, IrisNativeVulkan.ScreenPassMode mode,
@@ -157,6 +159,8 @@ public final class IrisVulkanScreenPassExecutor {
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		IrisVulkanGbufferTargets.ensureForFinalPass(encoder, colorTexture);
 		GpuTextureView depthView = main.getDepthTextureView();
+		GpuTextureView finalSourceView = finalSourceView(main, colorTexture);
+		logFinalSourceViewOnce(finalSourceView);
 
 		if (!mode.runsFinalPass()) {
 			preflightScreenPasses(encoder, depthView);
@@ -197,7 +201,7 @@ public final class IrisVulkanScreenPassExecutor {
 			preflightScreenPasses(encoder, depthView);
 
 			if (matchesDiagnosticCopySelection()) {
-				renderDiagnosticCopyPass(encoder, depthView, indices, indexType);
+				renderDiagnosticCopyPass(encoder, depthView, finalSourceView, indices, indexType);
 				IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
 			}
 
@@ -214,7 +218,7 @@ public final class IrisVulkanScreenPassExecutor {
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_FRAGMENT) {
 			preflightScreenPasses(encoder, depthView);
 
-			boolean renderedFinal = renderDiagnosticFinalVariantIfAvailable(encoder, depthView, indices, indexType);
+			boolean renderedFinal = renderDiagnosticFinalVariantIfAvailable(encoder, depthView, finalSourceView, indices, indexType);
 
 			if (renderedFinal) {
 				IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
@@ -231,7 +235,7 @@ public final class IrisVulkanScreenPassExecutor {
 			}
 		}
 
-		boolean renderedFinal = renderSelectedFinalPassIfAvailable(encoder, depthView, indices, indexType);
+		boolean renderedFinal = renderSelectedFinalPassIfAvailable(encoder, depthView, finalSourceView, indices, indexType);
 
 		if (renderedFinal) {
 			IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
@@ -330,7 +334,8 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private boolean renderSelectedFinalPassIfAvailable(CommandEncoder encoder, GpuTextureView depthView,
-													   GpuBuffer indices, IndexType indexType) {
+													   GpuTextureView finalSourceView, GpuBuffer indices,
+													   IndexType indexType) {
 		IrisVulkanScreenPassGraph.Node finalPass = graph.finalPass();
 
 		if (finalPass == null || !finalPass.ready() || failedPasses.contains(finalPass) || !matchesSelection(finalPass)) {
@@ -338,7 +343,7 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		try {
-			renderFinalPass(encoder, finalPass, depthView, indices, indexType);
+			renderFinalPass(encoder, finalPass, depthView, finalSourceView, indices, indexType);
 			return true;
 		} catch (RuntimeException e) {
 			failedPasses.add(finalPass);
@@ -348,7 +353,8 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private boolean renderDiagnosticFinalVariantIfAvailable(CommandEncoder encoder, GpuTextureView depthView,
-															GpuBuffer indices, IndexType indexType) {
+															GpuTextureView finalSourceView, GpuBuffer indices,
+															IndexType indexType) {
 		IrisVulkanScreenPassGraph.Node finalPass = graph.finalPass();
 
 		if (finalPass == null || !finalPass.ready() || failedPasses.contains(finalPass) || !matchesSelection(finalPass)) {
@@ -370,7 +376,8 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		try {
-			renderFinalPassWithPipeline(encoder, finalPass, pipeline, diagnosticLabel(), depthView, indices, indexType);
+			renderFinalPassWithPipeline(encoder, finalPass, pipeline, diagnosticLabel(), depthView, finalSourceView,
+				indices, indexType);
 			logDiagnosticVariantOnce();
 			return true;
 		} catch (RuntimeException e) {
@@ -413,20 +420,22 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private void renderFinalPass(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
-								 GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+								 GpuTextureView depthView, GpuTextureView finalSourceView, GpuBuffer indices,
+								 IndexType indexType) {
 		renderFinalPassWithPipeline(encoder, screenPass, screenPass.pipeline(), screenPass.label(),
-			depthView, indices, indexType);
+			depthView, finalSourceView, indices, indexType);
 	}
 
 	private void renderFinalPassWithPipeline(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
 											 RenderPipeline pipeline, String passLabel, GpuTextureView depthView,
-											 GpuBuffer indices, IndexType indexType) {
+											 GpuTextureView finalSourceView, GpuBuffer indices, IndexType indexType) {
 		GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(FINAL_SOURCE_TARGET);
 
 		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + passLabel,
 			outputView, java.util.Optional.empty())) {
 			pass.setPipeline(pipeline);
-			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, passLabel, stageFor(screenPass.kind()), depthView);
+			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, passLabel, stageFor(screenPass.kind()),
+				depthView, finalSourceView);
 			logDrawAttempt(passLabel, pipeline);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
@@ -435,7 +444,7 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private void renderDiagnosticCopyPass(CommandEncoder encoder, GpuTextureView depthView,
-										  GpuBuffer indices, IndexType indexType) {
+										  GpuTextureView finalSourceView, GpuBuffer indices, IndexType indexType) {
 		RenderPipeline pipeline = diagnosticCopyPipeline();
 		GpuTextureView outputView = IrisVulkanGbufferTargets.nextView(FINAL_SOURCE_TARGET);
 
@@ -443,7 +452,7 @@ public final class IrisVulkanScreenPassExecutor {
 			outputView, java.util.Optional.empty())) {
 			pass.setPipeline(pipeline);
 			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, DIAGNOSTIC_COPY_LABEL,
-				TextureStage.COMPOSITE_AND_FINAL, depthView);
+				TextureStage.COMPOSITE_AND_FINAL, depthView, finalSourceView);
 			logDrawAttempt(DIAGNOSTIC_COPY_LABEL, pipeline);
 			pass.setIndexBuffer(indices, indexType);
 			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
@@ -677,6 +686,31 @@ public final class IrisVulkanScreenPassExecutor {
 		GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
 		encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
 			colorTexture.getWidth(0), colorTexture.getHeight(0));
+	}
+
+	private static GpuTextureView finalSourceView(com.mojang.blaze3d.pipeline.RenderTarget main, GpuTexture colorTexture) {
+		if ((colorTexture.usage() & GpuTexture.USAGE_TEXTURE_BINDING) == 0) {
+			return null;
+		}
+
+		GpuTextureView view = main.getColorTextureView();
+		return view != null && !view.isClosed() ? view : null;
+	}
+
+	private void logFinalSourceViewOnce(GpuTextureView finalSourceView) {
+		if (!mode.runsFinalPass() || !drawMode.draws()) {
+			return;
+		}
+
+		if (finalSourceView != null) {
+			if (!loggedDirectFinalSourceFrame) {
+				loggedDirectFinalSourceFrame = true;
+				Iris.logger.info("Using main framebuffer color view as native Vulkan final source.");
+			}
+		} else if (!loggedFallbackFinalSourceFrame) {
+			loggedFallbackFinalSourceFrame = true;
+			Iris.logger.warn("Main framebuffer color view is not sampleable; using Iris final source target for native Vulkan final samplers.");
+		}
 	}
 
 	private boolean matchesDiagnosticCopySelection() {

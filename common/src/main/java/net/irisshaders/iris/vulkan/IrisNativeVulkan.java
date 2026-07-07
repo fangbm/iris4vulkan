@@ -754,6 +754,8 @@ public final class IrisNativeVulkan {
 		COPY_VERTEX_PACK_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_CONSTANT_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT(true, false),
+		COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT(true, false),
+		COPY_VERTEX_FINAL_TEXTURE_FRAGMENT(true, false),
 		SHADERPACK(true, true);
 
 		private final boolean draws;
@@ -787,8 +789,15 @@ public final class IrisNativeVulkan {
 						 "final_constant", "final-constant", "constant", "constant-fragment" ->
 						COPY_VERTEX_FINAL_CONSTANT_FRAGMENT;
 					case "copy_vertex_final_texelfetch_fragment", "copy-vertex-final-texelfetch-fragment",
-						 "final_texelfetch", "final-texelfetch", "texelfetch", "texel-fetch" ->
+						 "final_texelfetch", "final-texelfetch", "texelfetch", "texel-fetch",
+						 "final_texelfetch_clamped", "final-texelfetch-clamped" ->
 						COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT;
+					case "copy_vertex_final_texelfetch_raw_fragment", "copy-vertex-final-texelfetch-raw-fragment",
+						 "final_texelfetch_raw", "final-texelfetch-raw", "texelfetch-raw", "texel-fetch-raw" ->
+						COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT;
+					case "copy_vertex_final_texture_fragment", "copy-vertex-final-texture-fragment",
+						 "final_texture", "final-texture", "texture" ->
+						COPY_VERTEX_FINAL_TEXTURE_FRAGMENT;
 					case "shaderpack", "pack", "true", "enabled", "unsafe" -> SHADERPACK;
 					default -> OFF;
 				};

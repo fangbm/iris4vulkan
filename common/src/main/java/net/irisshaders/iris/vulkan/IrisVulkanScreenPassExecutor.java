@@ -641,18 +641,19 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private static String copyVertexForFragment(String fragmentSource) {
-		return copyVertexForVersion(fragmentSource, versionDirective(fragmentSource));
+		return copyVertexForVersion(fragmentSource, versionDirective(fragmentSource), false);
 	}
 
 	private static String copyVertexForCoreFragment(String fragmentSource) {
-		return copyVertexForVersion(fragmentSource, "#version 450\n");
+		return copyVertexForVersion(fragmentSource, "#version 450 core\n", true);
 	}
 
-	private static String copyVertexForVersion(String fragmentSource, String versionDirective) {
+	private static String copyVertexForVersion(String fragmentSource, String versionDirective, boolean explicitLayout) {
 		StringBuilder declarations = new StringBuilder();
 		StringBuilder assignments = new StringBuilder();
 		Matcher matcher = FRAGMENT_INPUT.matcher(fragmentSource == null ? "" : fragmentSource);
 		Set<String> declared = new HashSet<>();
+		int varyingLocation = 0;
 
 		while (matcher.find()) {
 			String qualifiers = matcher.group(1) == null ? "" : matcher.group(1);
@@ -663,14 +664,25 @@ public final class IrisVulkanScreenPassExecutor {
 				continue;
 			}
 
+			if (explicitLayout) {
+				declarations.append("layout(location = ").append(varyingLocation++).append(") ");
+			}
+
 			declarations.append(qualifiers).append("out ").append(type).append(' ').append(name).append(";\n");
 			assignments.append(name).append(" = ").append(defaultVaryingExpression(type)).append(";\n");
 		}
 
+		String positionDeclaration = explicitLayout
+			? "layout(location = 0) in vec3 Position;"
+			: "in vec3 Position;";
+		String uvDeclaration = explicitLayout
+			? "layout(location = 1) in vec2 UV0;"
+			: "in vec2 UV0;";
+
 		return (versionDirective + """
 			
-			in vec3 Position;
-			in vec2 UV0;
+			%s
+			%s
 
 			%s
 			void main() {
@@ -678,7 +690,7 @@ public final class IrisVulkanScreenPassExecutor {
 				%s
 				gl_Position = vec4(Position.xy * 2.0 - 1.0, 0.0, 1.0);
 			}
-			""".formatted(declarations, assignments));
+			""".formatted(positionDeclaration, uvDeclaration, declarations, assignments));
 	}
 
 	private static String diagnosticCopyFragmentFor(String fragmentSource) {
@@ -686,7 +698,18 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private static String diagnosticCopyCoreFragment() {
-		return "#version 450\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY;
+		return """
+			#version 450 core
+
+			uniform sampler2D colortex3;
+
+			layout(location = 0) out vec4 iris_fragColor;
+
+			void main() {
+				vec2 iris_texCoord = gl_FragCoord.xy / vec2(textureSize(colortex3, 0));
+				iris_fragColor = texture(colortex3, iris_texCoord);
+			}
+			""";
 	}
 
 	private static String finalConstantFragmentFor(String fragmentSource) {
@@ -718,11 +741,11 @@ public final class IrisVulkanScreenPassExecutor {
 
 	private static String finalTextureCoreFragment() {
 		return """
-			#version 450
+			#version 450 core
 
 			uniform sampler2D colortex3;
 
-			out vec3 finalData;
+			layout(location = 0) out vec3 finalData;
 
 			void main() {
 				ivec2 size = max(textureSize(colortex3, 0), ivec2(1));

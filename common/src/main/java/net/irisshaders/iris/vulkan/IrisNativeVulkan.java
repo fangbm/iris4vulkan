@@ -753,8 +753,10 @@ public final class IrisNativeVulkan {
 		PACK_VERTEX_COPY_FRAGMENT(true, false),
 		COPY_VERTEX_PACK_FRAGMENT(true, false),
 		COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION(true, false),
+		COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION(true, false),
 		COPY_VERTEX_FINAL_CONSTANT_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT(true, false),
+		COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT(true, false),
 		COPY_VERTEX_FINAL_TEXTURE_FRAGMENT(true, false),
@@ -790,12 +792,18 @@ public final class IrisNativeVulkan {
 					case "copy_vertex_copy_fragment_final_version", "copy-vertex-copy-fragment-final-version",
 						 "copy_final_version", "copy-final-version", "copy-450", "final-copy" ->
 						COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION;
+					case "copy_vertex_copy_fragment_core_version", "copy-vertex-copy-fragment-core-version",
+						 "copy_core_version", "copy-core-version", "copy-450-core", "copy-core" ->
+						COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION;
 					case "copy_vertex_final_constant_fragment", "copy-vertex-final-constant-fragment",
 						 "final_constant", "final-constant", "constant", "constant-fragment" ->
 						COPY_VERTEX_FINAL_CONSTANT_FRAGMENT;
 					case "copy_vertex_final_texture_150_fragment", "copy-vertex-final-texture-150-fragment",
 						 "final_texture_150", "final-texture-150", "texture-150" ->
 						COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT;
+					case "copy_vertex_final_texture_core_fragment", "copy-vertex-final-texture-core-fragment",
+						 "final_texture_core", "final-texture-core", "texture-core" ->
+						COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT;
 					case "copy_vertex_final_texelfetch_fragment", "copy-vertex-final-texelfetch-fragment",
 						 "final_texelfetch", "final-texelfetch", "texelfetch", "texel-fetch",
 						 "final_texelfetch_clamped", "final-texelfetch-clamped" ->

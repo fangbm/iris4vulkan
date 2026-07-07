@@ -33,8 +33,10 @@ public final class IrisVulkanScreenPassExecutor {
 	private static final String PACK_VERTEX_COPY_FRAGMENT_LABEL = "diagnostic/pack_vertex_copy_fragment";
 	private static final String COPY_VERTEX_PACK_FRAGMENT_LABEL = "diagnostic/copy_vertex_pack_fragment";
 	private static final String COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION_LABEL = "diagnostic/copy_vertex_copy_fragment_final_version";
+	private static final String COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION_LABEL = "diagnostic/copy_vertex_copy_fragment_core_version";
 	private static final String COPY_VERTEX_FINAL_CONSTANT_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_constant_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texture_150_fragment";
+	private static final String COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texture_core_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texelfetch_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texelfetch_raw_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXTURE_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texture_fragment";
@@ -75,8 +77,10 @@ public final class IrisVulkanScreenPassExecutor {
 	private RenderPipeline packVertexCopyFragmentPipeline;
 	private RenderPipeline copyVertexPackFragmentPipeline;
 	private RenderPipeline copyVertexCopyFragmentFinalVersionPipeline;
+	private RenderPipeline copyVertexCopyFragmentCoreVersionPipeline;
 	private RenderPipeline copyVertexFinalConstantFragmentPipeline;
 	private RenderPipeline copyVertexFinalTexture150FragmentPipeline;
+	private RenderPipeline copyVertexFinalTextureCoreFragmentPipeline;
 	private RenderPipeline copyVertexFinalTexelFetchFragmentPipeline;
 	private RenderPipeline copyVertexFinalTexelFetchRawFragmentPipeline;
 	private RenderPipeline copyVertexFinalTextureFragmentPipeline;
@@ -86,8 +90,10 @@ public final class IrisVulkanScreenPassExecutor {
 	private boolean loggedPackVertexCopyFragmentFrame;
 	private boolean loggedCopyVertexPackFragmentFrame;
 	private boolean loggedCopyVertexCopyFragmentFinalVersionFrame;
+	private boolean loggedCopyVertexCopyFragmentCoreVersionFrame;
 	private boolean loggedCopyVertexFinalConstantFragmentFrame;
 	private boolean loggedCopyVertexFinalTexture150FragmentFrame;
+	private boolean loggedCopyVertexFinalTextureCoreFragmentFrame;
 	private boolean loggedCopyVertexFinalTexelFetchFragmentFrame;
 	private boolean loggedCopyVertexFinalTexelFetchRawFragmentFrame;
 	private boolean loggedCopyVertexFinalTextureFragmentFrame;
@@ -126,6 +132,11 @@ public final class IrisVulkanScreenPassExecutor {
 			copyVertexCopyFragmentFinalVersionPipeline = null;
 		}
 
+		if (copyVertexCopyFragmentCoreVersionPipeline != null) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexCopyFragmentCoreVersionPipeline);
+			copyVertexCopyFragmentCoreVersionPipeline = null;
+		}
+
 		if (copyVertexFinalConstantFragmentPipeline != null) {
 			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalConstantFragmentPipeline);
 			copyVertexFinalConstantFragmentPipeline = null;
@@ -134,6 +145,11 @@ public final class IrisVulkanScreenPassExecutor {
 		if (copyVertexFinalTexture150FragmentPipeline != null) {
 			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalTexture150FragmentPipeline);
 			copyVertexFinalTexture150FragmentPipeline = null;
+		}
+
+		if (copyVertexFinalTextureCoreFragmentPipeline != null) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalTextureCoreFragmentPipeline);
+			copyVertexFinalTextureCoreFragmentPipeline = null;
 		}
 
 		if (copyVertexFinalTexelFetchFragmentPipeline != null) {
@@ -229,8 +245,10 @@ public final class IrisVulkanScreenPassExecutor {
 		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.PACK_VERTEX_COPY_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_PACK_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION
+			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_CONSTANT_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT
+			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_FRAGMENT) {
@@ -383,8 +401,10 @@ public final class IrisVulkanScreenPassExecutor {
 			case PACK_VERTEX_COPY_FRAGMENT -> packVertexCopyFragmentPipeline(finalPass);
 			case COPY_VERTEX_PACK_FRAGMENT -> copyVertexPackFragmentPipeline(finalPass);
 			case COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION -> copyVertexCopyFragmentFinalVersionPipeline(finalPass);
+			case COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION -> copyVertexCopyFragmentCoreVersionPipeline(finalPass);
 			case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> copyVertexFinalConstantFragmentPipeline(finalPass);
 			case COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT -> copyVertexFinalTexture150FragmentPipeline(finalPass);
+			case COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT -> copyVertexFinalTextureCoreFragmentPipeline(finalPass);
 			case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> copyVertexFinalTexelFetchFragmentPipeline(finalPass);
 			case COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT -> copyVertexFinalTexelFetchRawFragmentPipeline(finalPass);
 			case COPY_VERTEX_FINAL_TEXTURE_FRAGMENT -> copyVertexFinalTextureFragmentPipeline(finalPass);
@@ -516,6 +536,17 @@ public final class IrisVulkanScreenPassExecutor {
 		return copyVertexCopyFragmentFinalVersionPipeline;
 	}
 
+	private RenderPipeline copyVertexCopyFragmentCoreVersionPipeline(IrisVulkanScreenPassGraph.Node finalPass) {
+		if (copyVertexCopyFragmentCoreVersionPipeline == null) {
+			copyVertexCopyFragmentCoreVersionPipeline = createDiagnosticPipeline(COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION_LABEL);
+			IrisNativeVulkan.registerCustomPipelineSource(copyVertexCopyFragmentCoreVersionPipeline,
+				COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION_LABEL, copyVertexForCoreFragment(finalPass.fragmentSource()),
+				diagnosticCopyCoreFragment(), true);
+		}
+
+		return copyVertexCopyFragmentCoreVersionPipeline;
+	}
+
 	private RenderPipeline copyVertexFinalConstantFragmentPipeline(IrisVulkanScreenPassGraph.Node finalPass) {
 		if (copyVertexFinalConstantFragmentPipeline == null) {
 			copyVertexFinalConstantFragmentPipeline = createDiagnosticPipeline(COPY_VERTEX_FINAL_CONSTANT_FRAGMENT_LABEL);
@@ -535,6 +566,17 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		return copyVertexFinalTexture150FragmentPipeline;
+	}
+
+	private RenderPipeline copyVertexFinalTextureCoreFragmentPipeline(IrisVulkanScreenPassGraph.Node finalPass) {
+		if (copyVertexFinalTextureCoreFragmentPipeline == null) {
+			copyVertexFinalTextureCoreFragmentPipeline = createDiagnosticPipeline(COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT_LABEL);
+			IrisNativeVulkan.registerCustomPipelineSource(copyVertexFinalTextureCoreFragmentPipeline,
+				COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT_LABEL, copyVertexForCoreFragment(finalPass.fragmentSource()),
+				finalTextureCoreFragment(), true);
+		}
+
+		return copyVertexFinalTextureCoreFragmentPipeline;
 	}
 
 	private RenderPipeline copyVertexFinalTexelFetchFragmentPipeline(IrisVulkanScreenPassGraph.Node finalPass) {
@@ -599,6 +641,14 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private static String copyVertexForFragment(String fragmentSource) {
+		return copyVertexForVersion(fragmentSource, versionDirective(fragmentSource));
+	}
+
+	private static String copyVertexForCoreFragment(String fragmentSource) {
+		return copyVertexForVersion(fragmentSource, "#version 450\n");
+	}
+
+	private static String copyVertexForVersion(String fragmentSource, String versionDirective) {
 		StringBuilder declarations = new StringBuilder();
 		StringBuilder assignments = new StringBuilder();
 		Matcher matcher = FRAGMENT_INPUT.matcher(fragmentSource == null ? "" : fragmentSource);
@@ -617,7 +667,7 @@ public final class IrisVulkanScreenPassExecutor {
 			assignments.append(name).append(" = ").append(defaultVaryingExpression(type)).append(";\n");
 		}
 
-		return (versionDirective(fragmentSource) + """
+		return (versionDirective + """
 			
 			in vec3 Position;
 			in vec2 UV0;
@@ -635,6 +685,10 @@ public final class IrisVulkanScreenPassExecutor {
 		return versionDirective(fragmentSource) + DIAGNOSTIC_COPY_FRAGMENT_BODY;
 	}
 
+	private static String diagnosticCopyCoreFragment() {
+		return "#version 450\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY;
+	}
+
 	private static String finalConstantFragmentFor(String fragmentSource) {
 		return versionDirective(fragmentSource) + """
 
@@ -649,6 +703,22 @@ public final class IrisVulkanScreenPassExecutor {
 	private static String finalTexture150Fragment() {
 		return """
 			#version 150
+
+			uniform sampler2D colortex3;
+
+			out vec3 finalData;
+
+			void main() {
+				ivec2 size = max(textureSize(colortex3, 0), ivec2(1));
+				vec2 texel = clamp(gl_FragCoord.xy, vec2(0.0), vec2(size - ivec2(1)));
+				finalData = texture(colortex3, (texel + vec2(0.5)) / vec2(size)).rgb;
+			}
+			""";
+	}
+
+	private static String finalTextureCoreFragment() {
+		return """
+			#version 450
 
 			uniform sampler2D colortex3;
 
@@ -781,8 +851,10 @@ public final class IrisVulkanScreenPassExecutor {
 		return switch (drawMode) {
 			case PACK_VERTEX_COPY_FRAGMENT -> PACK_VERTEX_COPY_FRAGMENT_LABEL;
 			case COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION -> COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION_LABEL;
+			case COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION -> COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION_LABEL;
 			case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> COPY_VERTEX_FINAL_CONSTANT_FRAGMENT_LABEL;
 			case COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT -> COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT_LABEL;
+			case COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT -> COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT_LABEL;
 			case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL;
 			case COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT -> COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT_LABEL;
 			case COPY_VERTEX_FINAL_TEXTURE_FRAGMENT -> COPY_VERTEX_FINAL_TEXTURE_FRAGMENT_LABEL;
@@ -807,6 +879,12 @@ public final class IrisVulkanScreenPassExecutor {
 			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and final-version copy fragment.");
 		}
 
+		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION
+			&& !loggedCopyVertexCopyFragmentCoreVersionFrame) {
+			loggedCopyVertexCopyFragmentCoreVersionFrame = true;
+			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and core 450 copy fragment.");
+		}
+
 		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_CONSTANT_FRAGMENT
 			&& !loggedCopyVertexFinalConstantFragmentFrame) {
 			loggedCopyVertexFinalConstantFragmentFrame = true;
@@ -817,6 +895,12 @@ public final class IrisVulkanScreenPassExecutor {
 			&& !loggedCopyVertexFinalTexture150FragmentFrame) {
 			loggedCopyVertexFinalTexture150FragmentFrame = true;
 			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and final-style texture 150 fragment.");
+		}
+
+		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT
+			&& !loggedCopyVertexFinalTextureCoreFragmentFrame) {
+			loggedCopyVertexFinalTextureCoreFragmentFrame = true;
+			Iris.logger.info("Rendered native Vulkan diagnostic pass using copy vertex and final-style core 450 texture fragment.");
 		}
 
 		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT

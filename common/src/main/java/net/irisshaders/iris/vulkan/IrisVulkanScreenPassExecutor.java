@@ -191,7 +191,7 @@ public final class IrisVulkanScreenPassExecutor {
 		CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
 		IrisVulkanGbufferTargets.ensureForFinalPass(encoder, colorTexture);
 		GpuTextureView depthView = main.getDepthTextureView();
-		GpuTextureView finalSourceView = finalSourceView(main, colorTexture);
+		GpuTextureView finalSourceView = finalSourceViewForMode(main, colorTexture);
 		logFinalSourceViewOnce(finalSourceView);
 
 		if (!mode.runsFinalPass()) {
@@ -847,8 +847,31 @@ public final class IrisVulkanScreenPassExecutor {
 		return view != null && !view.isClosed() ? view : null;
 	}
 
+	private GpuTextureView finalSourceViewForMode(com.mojang.blaze3d.pipeline.RenderTarget main, GpuTexture colorTexture) {
+		if (!usesIrisFinalSourceTarget()) {
+			return finalSourceView(main, colorTexture);
+		}
+
+		if (!loggedFallbackFinalSourceFrame) {
+			loggedFallbackFinalSourceFrame = true;
+			Iris.logger.info("Using Iris final source target instead of the main framebuffer for native Vulkan {}.",
+				diagnosticLabel());
+		}
+
+		return null;
+	}
+
+	private boolean usesIrisFinalSourceTarget() {
+		return drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION
+			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT;
+	}
+
 	private void logFinalSourceViewOnce(GpuTextureView finalSourceView) {
 		if (!mode.runsFinalPass() || !drawMode.draws()) {
+			return;
+		}
+
+		if (usesIrisFinalSourceTarget()) {
 			return;
 		}
 

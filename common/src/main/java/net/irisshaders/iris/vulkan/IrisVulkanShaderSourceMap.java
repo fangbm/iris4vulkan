@@ -13,6 +13,7 @@ import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.pipeline.transform.Patch;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
+import net.irisshaders.iris.shaderpack.properties.ProgramDirectives;
 import net.irisshaders.iris.shaderpack.programs.ProgramFallbackResolver;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
@@ -42,6 +43,22 @@ public final class IrisVulkanShaderSourceMap {
 		}
 
 		return source;
+	}
+
+	/**
+	 * Reports whether the selected program exists directly in the pack. A resolved fallback is still useful for
+	 * vanilla-compatible routes, but it must remain visible in native Vulkan diagnostics.
+	 */
+	public boolean hasDirectSource(ShaderKey key) {
+		return resolver.has(key.getProgram());
+	}
+
+	public String resolvedProgramName(ShaderKey key) {
+		return resolver.resolve(key.getProgram()).map(ProgramSource::getName).orElse("<missing>");
+	}
+
+	public ProgramDirectives getDirectives(ShaderKey key) {
+		return resolver.resolve(key.getProgram()).map(ProgramSource::getDirectives).orElse(null);
 	}
 
 	private IrisShaderSource createSource(ShaderKey key) {

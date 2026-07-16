@@ -13,8 +13,10 @@ public final class IrisVulkanFinalPassRenderer {
 		this.graph = IrisVulkanScreenPassPlanner.create(programSet);
 		this.executor = new IrisVulkanScreenPassExecutor(graph, mode, IrisNativeVulkan.selectedScreenPassLabel());
 
-		if (!graph.hasReadyFinalPass()) {
-			Iris.logger.info("Shaderpack has no supported native Vulkan final pass; screen pass execution is disabled.");
+		if (!graph.hasRunnablePasses()) {
+			Iris.logger.info("Shaderpack has no supported native Vulkan screen passes; screen pass execution is disabled.");
+		} else if (!graph.hasReadyFinalPass()) {
+			Iris.logger.info("Shaderpack has no supported native Vulkan final pass; logical passes will fall back to colortex0.");
 		}
 	}
 
@@ -28,7 +30,7 @@ public final class IrisVulkanFinalPassRenderer {
 	}
 
 	public boolean hasRunnablePasses() {
-		return graph.hasReadyFinalPass();
+		return graph.hasRunnablePasses();
 	}
 
 	public boolean requiresGbufferCapture() {

@@ -24,7 +24,9 @@ import net.irisshaders.iris.pipeline.programs.IrisShaderSource;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.DimensionId;
 import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
+import net.irisshaders.iris.shaderpack.properties.ProgramDirectives;
 import net.irisshaders.iris.vertices.ImmediateState;
 import net.minecraft.client.renderer.ShaderDefines;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -34,6 +36,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,10 +61,19 @@ public final class IrisNativeVulkan {
 	private static final Set<RenderPipeline> missingShaders = ConcurrentHashMap.newKeySet();
 	private static final Set<ShaderKey> mappedShaders = ConcurrentHashMap.newKeySet();
 	private static final Set<ShaderKey> unsupportedShaders = ConcurrentHashMap.newKeySet();
+	private static final Set<ShaderMappingLogKey> loggedCapabilityMappings = ConcurrentHashMap.newKeySet();
+	private static final Set<WorldRenderingPhase> loggedPhaseMappings = ConcurrentHashMap.newKeySet();
 	private static final Set<CacheKey> failedPipelines = ConcurrentHashMap.newKeySet();
 	private static final Map<CacheKey, VulkanRenderPipeline> compiledPipelines = new ConcurrentHashMap<>();
 	private static final Map<RenderPipeline, CustomPipelineSource> customPipelineSources = new ConcurrentHashMap<>();
 	private static final Map<CompatiblePipelineKey, RenderPipeline> compatiblePipelines = new ConcurrentHashMap<>();
+	private static final List<ShaderCapability> SHADER_CAPABILITY_TABLE = createShaderCapabilityTable();
+	private static final Map<ShaderKey, ShaderCapability> SHADER_CAPABILITIES = indexShaderCapabilities();
+	private static final ShaderCapability UNSUPPORTED_SHADER_CAPABILITY = new ShaderCapability(
+		"gbuffers/other", CapabilityStatus.UNSUPPORTED, Set.of(), Set.of(), false,
+		"No native Vulkan route is defined for these shader keys.");
+	private static final Map<WorldRenderingPhase, ShaderKey> PHASE_SHADER_KEYS = createPhaseShaderKeys();
+	private static boolean loggedCapabilitySummary;
 
 	private IrisNativeVulkan() {
 	}
@@ -71,6 +85,7 @@ public final class IrisNativeVulkan {
 
 		loggedRendererInit = true;
 		Iris.logger.info("Detected Minecraft's native Vulkan backend; Iris Vulkan migration hooks are active.");
+		logCapabilitySummary();
 		loadShaderpackIfReady();
 	}
 
@@ -111,6 +126,7 @@ public final class IrisNativeVulkan {
 		}
 
 		if (!shouldAttemptVulkanOverride(shaderKey)) {
+			logCapabilityBlocked(renderPipeline, shaderKey);
 			return Optional.empty();
 		}
 
@@ -118,9 +134,12 @@ public final class IrisNativeVulkan {
 
 		if (mappedShaders.add(shaderKey)) {
 			String sourceName = source == null ? "<missing source>" : source.name();
+			String sourceKind = source == null ? "missing" : source.fallback() ? "fallback" : "direct";
+			ShaderCapability capability = capabilityFor(shaderKey);
 
-			Iris.logger.info("Mapped Vulkan render pipeline {} to Iris shader key {} / source {}.",
-				renderPipeline.getLocation(), shaderKey.name(), sourceName);
+			Iris.logger.info("Mapped Vulkan render pipeline {} to {} / category={} / phase={} / program={} / source={} ({}).",
+				renderPipeline.getLocation(), shaderKey.name(), capability.category(), currentPhase(),
+				shaderKey.getProgram().getSourceName(), sourceName, sourceKind);
 		}
 
 		return compileOverride(device, renderPipeline, shaderKey, source);
@@ -207,14 +226,15 @@ public final class IrisNativeVulkan {
 			return new int[0];
 		}
 
-		IrisShaderSource source = getSource(Iris.getPipelineManager().getPipelineNullable() instanceof IrisRenderingPipeline irisPipeline ? irisPipeline : null,
-			shaderKey);
-
-		if (source == null || source.fragment() == null) {
+		IrisVulkanShaderSourceMap currentSourceMap = getSourceMap();
+		if (currentSourceMap == null) {
 			return new int[0];
 		}
 
-		return IrisVulkanShaderResources.drawBuffersFromSource(source.fragment());
+		ProgramDirectives directives = currentSourceMap.getDirectives(shaderKey);
+		return directives == null ? new int[0] : java.util.Arrays.stream(directives.getDrawBuffers())
+			.filter(target -> target >= 0 && target < IrisVulkanGbufferTargets.COLOR_TARGET_COUNT)
+			.toArray();
 	}
 
 	public static void renderFinalPassIfReady() {
@@ -439,24 +459,156 @@ public final class IrisNativeVulkan {
 	}
 
 	private static boolean shouldAttemptVulkanOverride(ShaderKey shaderKey) {
-		return shaderKey == ShaderKey.SODIUM_TERRAIN_SOLID
-			|| shaderKey == ShaderKey.SODIUM_TERRAIN_CUTOUT;
+		return capabilityFor(shaderKey).status() == CapabilityStatus.SUPPORTED;
 	}
 
 	private static ShaderKey shaderKeyForCurrentPhase() {
-		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
-		WorldRenderingPhase phase = pipeline == null ? WorldRenderingPhase.NONE : pipeline.getPhase();
+		WorldRenderingPhase phase = currentPhase();
+		ShaderKey shaderKey = PHASE_SHADER_KEYS.get(phase);
 
-		return switch (phase) {
-			case TERRAIN_SOLID -> ShaderKey.SODIUM_TERRAIN_SOLID;
-			case TERRAIN_CUTOUT, TERRAIN_CUTOUT_MIPPED -> ShaderKey.SODIUM_TERRAIN_CUTOUT;
-			default -> null;
-		};
+		if (shaderKey != null && loggedPhaseMappings.add(phase)) {
+			ShaderCapability capability = capabilityFor(shaderKey);
+			Iris.logger.info("Native Vulkan phase route: {} -> {} / category={} / program={} / status={}",
+				phase, shaderKey.name(), capability.category(), shaderKey.getProgram().getSourceName(), capability.status());
+		}
+
+		return shaderKey != null && capabilityFor(shaderKey).status() == CapabilityStatus.SUPPORTED ? shaderKey : null;
 	}
 
 	private static boolean isNativeVulkanGbufferShader(ShaderKey shaderKey) {
-		return shaderKey == ShaderKey.SODIUM_TERRAIN_SOLID
-			|| shaderKey == ShaderKey.SODIUM_TERRAIN_CUTOUT;
+		return capabilityFor(shaderKey).gbufferCapture();
+	}
+
+	private static WorldRenderingPhase currentPhase() {
+		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
+		return pipeline == null ? WorldRenderingPhase.NONE : pipeline.getPhase();
+	}
+
+	private static ShaderCapability capabilityFor(ShaderKey shaderKey) {
+		return SHADER_CAPABILITIES.getOrDefault(shaderKey, UNSUPPORTED_SHADER_CAPABILITY);
+	}
+
+	private static void logCapabilityBlocked(RenderPipeline renderPipeline, ShaderKey shaderKey) {
+		ShaderCapability capability = capabilityFor(shaderKey);
+		ShaderMappingLogKey key = new ShaderMappingLogKey(renderPipeline, shaderKey, capability.status());
+
+		if (loggedCapabilityMappings.add(key)) {
+			Iris.logger.info("Native Vulkan route is not enabled for {} -> {} / category={} / phase={} / program={} / status={}: {}",
+				renderPipeline.getLocation(), shaderKey.name(), capability.category(), currentPhase(),
+				shaderKey.getProgram().getSourceName(), capability.status(), capability.reason());
+		}
+	}
+
+	private static void logCapabilitySummary() {
+		if (loggedCapabilitySummary) {
+			return;
+		}
+
+		loggedCapabilitySummary = true;
+		Iris.logger.info("Native Vulkan shaderpack capability table (screenPassMode={}, execution remains gated):", SCREEN_PASS_MODE);
+
+		for (ShaderCapability capability : SHADER_CAPABILITY_TABLE) {
+			Iris.logger.info("  {}={} keys=[{}] programs=[{}]: {}", capability.category(), capability.status(),
+				formatNames(capability.shaderKeys()), formatNames(capability.programs()), capability.reason());
+		}
+
+		Set<ShaderKey> unclassified = EnumSet.allOf(ShaderKey.class);
+		unclassified.removeAll(SHADER_CAPABILITIES.keySet());
+		Iris.logger.info("  {}={} keys=[{}]: {}", UNSUPPORTED_SHADER_CAPABILITY.category(),
+			UNSUPPORTED_SHADER_CAPABILITY.status(), formatNames(unclassified), UNSUPPORTED_SHADER_CAPABILITY.reason());
+	}
+
+	private static String formatNames(Set<?> values) {
+		return values.stream().map(Object::toString).sorted().reduce((first, second) -> first + "," + second).orElse("");
+	}
+
+	private static List<ShaderCapability> createShaderCapabilityTable() {
+		return List.of(
+			new ShaderCapability("gbuffers/terrain", CapabilityStatus.SUPPORTED,
+				Set.of(ShaderKey.SODIUM_TERRAIN_SOLID, ShaderKey.SODIUM_TERRAIN_CUTOUT), Set.of(ProgramId.TerrainSolid, ProgramId.TerrainCutout), true,
+				"Native gbuffer attachments and Sodium vertex/resource adaptation are available."),
+			new ShaderCapability("gbuffers/water", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.SODIUM_TERRAIN_TRANSLUCENT, ShaderKey.TERRAIN_TRANSLUCENT), Set.of(ProgramId.Water), false,
+				"Water capture and translucent ordering resources are not wired yet."),
+			new ShaderCapability("gbuffers/entities", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.ENTITIES_ALPHA, ShaderKey.ENTITIES_SOLID, ShaderKey.ENTITIES_SOLID_DIFFUSE, ShaderKey.ENTITIES_SOLID_BRIGHT,
+					ShaderKey.ENTITIES_CUTOUT, ShaderKey.ENTITIES_CUTOUT_DIFFUSE, ShaderKey.ENTITIES_TRANSLUCENT,
+					ShaderKey.ENTITIES_EYES, ShaderKey.ENTITIES_EYES_TRANS, ShaderKey.BLOCK_ENTITY, ShaderKey.BLOCK_ENTITY_BRIGHT,
+					ShaderKey.BLOCK_ENTITY_DIFFUSE, ShaderKey.BE_TRANSLUCENT),
+				Set.of(ProgramId.Entities, ProgramId.EntitiesTrans, ProgramId.SpiderEyes, ProgramId.Block, ProgramId.BlockTrans), false,
+				"Entity and block-entity render-pass resources are not wired yet."),
+			new ShaderCapability("gbuffers/hand", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.HAND_CUTOUT, ShaderKey.HAND_CUTOUT_BRIGHT, ShaderKey.HAND_CUTOUT_DIFFUSE,
+					ShaderKey.HAND_TEXT, ShaderKey.HAND_TEXT_INTENSITY), Set.of(ProgramId.Hand), false,
+				"Hand render-pass routing and bindings are not wired yet."),
+			new ShaderCapability("gbuffers/hand_water", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.HAND_TRANSLUCENT, ShaderKey.HAND_WATER_BRIGHT, ShaderKey.HAND_WATER_DIFFUSE,
+					ShaderKey.HAND_TEXT_TRANSLUCENT), Set.of(ProgramId.HandWater), false,
+				"Hand-water translucent resources are not wired yet."),
+			new ShaderCapability("gbuffers/sky", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.SKY_BASIC, ShaderKey.SKY_BASIC_COLOR, ShaderKey.SKY_TEXTURED, ShaderKey.SKY_TEXTURED_COLOR),
+				Set.of(ProgramId.SkyBasic, ProgramId.SkyTextured), false,
+				"Sky phases are deliberately left on vanilla Vulkan until their targets and uniforms are integrated."),
+			new ShaderCapability("gbuffers/weather", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.WEATHER), Set.of(ProgramId.Weather), false,
+				"Weather render-pass resources are not wired yet."),
+			new ShaderCapability("gbuffers/beacon", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.BEACON), Set.of(ProgramId.BeaconBeam), false,
+				"Beacon render-pass resources are not wired yet."),
+			new ShaderCapability("gbuffers/glint", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.GLINT), Set.of(ProgramId.ArmorGlint), false,
+				"Glint render-pass resources are not wired yet."),
+			new ShaderCapability("shadow", CapabilityStatus.PLANNED,
+				Set.of(ShaderKey.SHADOW_SODIUM_TERRAIN_SOLID, ShaderKey.SHADOW_SODIUM_TERRAIN_CUTOUT,
+					ShaderKey.SHADOW_SODIUM_TERRAIN_TRANSLUCENT, ShaderKey.SHADOW_TERRAIN_CUTOUT, ShaderKey.SHADOW_TRANSLUCENT,
+					ShaderKey.SHADOW_ENTITIES_CUTOUT, ShaderKey.SHADOW_BLOCK, ShaderKey.SHADOW_BEACON_BEAM,
+					ShaderKey.SHADOW_BASIC, ShaderKey.SHADOW_BASIC_COLOR, ShaderKey.SHADOW_TEX, ShaderKey.SHADOW_TEX_COLOR,
+					ShaderKey.SHADOW_CLOUDS, ShaderKey.SHADOW_LINES, ShaderKey.SHADOW_LEASH, ShaderKey.SHADOW_LIGHTNING,
+					ShaderKey.SHADOW_PARTICLES, ShaderKey.SHADOW_TEXT, ShaderKey.SHADOW_TEXT_BG, ShaderKey.SHADOW_TEXT_INTENSITY,
+					ShaderKey.MEKANISM_FLAME_SHADOW),
+				Set.of(ProgramId.Shadow, ProgramId.ShadowSolid, ProgramId.ShadowCutout, ProgramId.ShadowWater,
+					ProgramId.ShadowEntities, ProgramId.ShadowLightning, ProgramId.ShadowBlock), false,
+				"Shadow targets, culling, and shadow-specific bindings are not wired yet."),
+			new ShaderCapability("distant_horizons", CapabilityStatus.PLANNED, Set.of(),
+				Set.of(ProgramId.DhTerrain, ProgramId.DhWater, ProgramId.DhGeneric, ProgramId.DhShadow), false,
+				"DH owns separate framebuffers and integration hooks; native Vulkan execution is not enabled yet.")
+		);
+	}
+
+	private static Map<ShaderKey, ShaderCapability> indexShaderCapabilities() {
+		Map<ShaderKey, ShaderCapability> indexed = new EnumMap<>(ShaderKey.class);
+
+		for (ShaderCapability capability : SHADER_CAPABILITY_TABLE) {
+			for (ShaderKey shaderKey : capability.shaderKeys()) {
+				indexed.put(shaderKey, capability);
+			}
+		}
+
+		return Map.copyOf(indexed);
+	}
+
+	private static Map<WorldRenderingPhase, ShaderKey> createPhaseShaderKeys() {
+		Map<WorldRenderingPhase, ShaderKey> routes = new EnumMap<>(WorldRenderingPhase.class);
+		routes.put(WorldRenderingPhase.SKY, ShaderKey.SKY_BASIC);
+		routes.put(WorldRenderingPhase.SUNSET, ShaderKey.SKY_BASIC_COLOR);
+		routes.put(WorldRenderingPhase.SUN, ShaderKey.SKY_BASIC_COLOR);
+		routes.put(WorldRenderingPhase.MOON, ShaderKey.SKY_TEXTURED);
+		routes.put(WorldRenderingPhase.STARS, ShaderKey.SKY_BASIC);
+		routes.put(WorldRenderingPhase.VOID, ShaderKey.SKY_BASIC);
+		routes.put(WorldRenderingPhase.CUSTOM_SKY, ShaderKey.SKY_BASIC);
+		routes.put(WorldRenderingPhase.TERRAIN_SOLID, ShaderKey.SODIUM_TERRAIN_SOLID);
+		routes.put(WorldRenderingPhase.TERRAIN_CUTOUT_MIPPED, ShaderKey.SODIUM_TERRAIN_CUTOUT);
+		routes.put(WorldRenderingPhase.TERRAIN_CUTOUT, ShaderKey.SODIUM_TERRAIN_CUTOUT);
+		routes.put(WorldRenderingPhase.TERRAIN_TRANSLUCENT, ShaderKey.SODIUM_TERRAIN_TRANSLUCENT);
+		routes.put(WorldRenderingPhase.ENTITIES, ShaderKey.ENTITIES_SOLID);
+		routes.put(WorldRenderingPhase.BLOCK_ENTITIES, ShaderKey.BLOCK_ENTITY);
+		routes.put(WorldRenderingPhase.HAND_SOLID, ShaderKey.HAND_CUTOUT);
+		routes.put(WorldRenderingPhase.HAND_TRANSLUCENT, ShaderKey.HAND_TRANSLUCENT);
+		routes.put(WorldRenderingPhase.PARTICLES, ShaderKey.PARTICLES);
+		routes.put(WorldRenderingPhase.CLOUDS, ShaderKey.CLOUDS);
+		routes.put(WorldRenderingPhase.RAIN_SNOW, ShaderKey.WEATHER);
+		routes.put(WorldRenderingPhase.WORLD_BORDER, ShaderKey.TEXTURED);
+		return Map.copyOf(routes);
 	}
 
 	private static IrisShaderSource getSource(IrisRenderingPipeline irisPipeline, ShaderKey shaderKey) {
@@ -464,6 +616,11 @@ public final class IrisNativeVulkan {
 			return irisPipeline.getShaderMap().getSource(shaderKey);
 		}
 
+		IrisVulkanShaderSourceMap currentSourceMap = getSourceMap();
+		return currentSourceMap == null ? null : currentSourceMap.getSource(shaderKey);
+	}
+
+	private static IrisVulkanShaderSourceMap getSourceMap() {
 		Optional<ShaderPack> currentPack = Iris.getCurrentPack();
 
 		if (currentPack.isEmpty()) {
@@ -483,7 +640,7 @@ public final class IrisNativeVulkan {
 			sourceMap = new IrisVulkanShaderSourceMap(pack.getProgramSet(dimension));
 		}
 
-		return sourceMap.getSource(shaderKey);
+		return sourceMap;
 	}
 
 	private static Optional<VulkanRenderPipeline> compileCustomOverride(VulkanDevice device, RenderPipeline renderPipeline,
@@ -687,6 +844,19 @@ public final class IrisNativeVulkan {
 			|| sampler.equals("u_mainsampler")
 			|| sampler.equals("texture")
 			|| sampler.equals("tex");
+	}
+
+	private enum CapabilityStatus {
+		SUPPORTED,
+		PLANNED,
+		UNSUPPORTED
+	}
+
+	private record ShaderCapability(String category, CapabilityStatus status, Set<ShaderKey> shaderKeys,
+								Set<ProgramId> programs, boolean gbufferCapture, String reason) {
+	}
+
+	private record ShaderMappingLogKey(RenderPipeline renderPipeline, ShaderKey shaderKey, CapabilityStatus status) {
 	}
 
 	private record CacheKey(VulkanDevice device, RenderPipeline renderPipeline, Object source) {

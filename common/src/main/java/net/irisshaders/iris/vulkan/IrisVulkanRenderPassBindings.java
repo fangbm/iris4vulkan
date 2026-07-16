@@ -38,17 +38,14 @@ public final class IrisVulkanRenderPassBindings {
 		"iris_DynamicTransforms", "DynamicTransforms",
 		"iris_Projection", "Projection",
 		"iris_Globals", "Globals",
-		"iris_Fog", "Fog",
-		"iris_CloudInfo", "CloudInfo"
+		"iris_Fog", "Fog"
 	);
-	private static final Set<String> WARNED_MISSING_TEXTURES = ConcurrentHashMap.newKeySet();
-	private static final Set<String> WARNED_MISSING_UNIFORMS = ConcurrentHashMap.newKeySet();
 	private static final Set<String> WARNED_DUMMY_TEXTURES = ConcurrentHashMap.newKeySet();
 	private static final Set<String> LOGGED_SCREEN_PASS_BINDINGS = ConcurrentHashMap.newKeySet();
 	private static final Map<RenderPass, ScreenPassContext> SCREEN_PASS_CONTEXTS =
 		Collections.synchronizedMap(new WeakHashMap<>());
-	private static GpuBuffer dummyUniformBuffer;
-	private static GpuBuffer dummyTexelBuffer;
+	private static final Map<RenderPass, GpuBuffer> SNAPSHOT_BUFFERS =
+		Collections.synchronizedMap(new WeakHashMap<>());
 	private static GpuTexture dummyTexture;
 	private static GpuTextureView dummyTextureView;
 
@@ -85,6 +82,7 @@ public final class IrisVulkanRenderPassBindings {
 		}
 
 		RenderSystem.bindDefaultUniforms(pass);
+		bindUniformSnapshot(pass, pipeline, "render pass");
 		bindUniformAliases(pass, backend, pipeline);
 		bindTextureAliases(pass, backend, pipeline, colorAttachments);
 	}
@@ -122,25 +120,59 @@ public final class IrisVulkanRenderPassBindings {
 
 	private static void bindScreenPassUniforms(RenderPass pass, RenderPipeline pipeline, String passLabel) {
 		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
+		GpuBuffer snapshotBuffer = bindUniformSnapshot(pass, pipeline, passLabel);
 
 		for (BindGroupLayout.UniformDescription uniform : requiredUniforms) {
 			String name = uniform.name();
+
+			if (name.equals(IrisVulkanUniformSnapshot.BLOCK_NAME)) {
+				if (snapshotBuffer == null) {
+					throw missingUniform(passLabel, name);
+				}
+
+				continue;
+			}
 
 			if (bindDefaultUniform(pass, name)) {
 				continue;
 			}
 
-			if (uniform.type() == com.mojang.blaze3d.shaders.UniformType.TEXEL_BUFFER) {
-				pass.setUniform(name, dummyTexelBuffer().slice());
-			} else {
-				pass.setUniform(name, dummyUniformBuffer().slice());
-			}
-
-			if (WARNED_MISSING_UNIFORMS.add("screen:" + passLabel + ":" + name)) {
-				Iris.logger.warn("Missing Vulkan screen pass {} uniform binding for {}; using a dummy buffer.",
-					passLabel, name);
-			}
+			throw missingUniform(passLabel, name);
 		}
+	}
+
+	private static GpuBuffer bindUniformSnapshot(RenderPass pass, RenderPipeline pipeline, String passLabel) {
+		IrisVulkanShaderResources.ResourceSet resources = IrisVulkanShaderResources.resourcesFor(pipeline);
+		if (resources == null || resources.uniformFields().isEmpty()) {
+			return null;
+		}
+
+		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
+		if (requiredUniforms.stream().noneMatch(uniform ->
+			uniform.name().equals(IrisVulkanUniformSnapshot.BLOCK_NAME))) {
+			return null;
+		}
+
+		GpuBuffer buffer = SNAPSHOT_BUFFERS.get(pass);
+		if (buffer == null || buffer.isClosed()) {
+			IrisVulkanUniformSnapshot.Snapshot snapshot = IrisVulkanUniformSnapshot.capture(resources.uniformFields());
+			buffer = snapshot.upload();
+			SNAPSHOT_BUFFERS.put(pass, buffer);
+			GpuBuffer retainedBuffer = buffer;
+			RenderSystem.queueFencedTask(() -> {
+				if (SNAPSHOT_BUFFERS.remove(pass, retainedBuffer)) {
+					retainedBuffer.close();
+				}
+			});
+		}
+
+		pass.setUniform(IrisVulkanUniformSnapshot.BLOCK_NAME, buffer.slice());
+		return buffer;
+	}
+
+	private static IllegalStateException missingUniform(String passLabel, String name) {
+		return new IllegalStateException("Missing Vulkan " + passLabel + " uniform binding for " + name
+			+ "; the resource must be supported explicitly or the pass must be disabled");
 	}
 
 	private static void bindScreenPassTextures(RenderPass pass, RenderPipeline pipeline, GpuTextureView depthView,
@@ -154,6 +186,10 @@ public final class IrisVulkanRenderPassBindings {
 			}
 
 			TextureBinding binding = screenPassTextureBinding(sampler, depthView, finalSourceView, passLabel, stage);
+			if (!isUsable(binding)) {
+				throw new IllegalStateException("Invalid Vulkan screen pass texture binding for " + sampler);
+			}
+
 			pass.bindTexture(sampler, binding.view(), binding.sampler());
 		}
 	}
@@ -210,14 +246,8 @@ public final class IrisVulkanRenderPassBindings {
 			}
 		}
 
-		TextureBinding dummy = dummyTextureBinding();
-
-		if (WARNED_MISSING_TEXTURES.add("screen:" + passLabel + ":" + sampler)) {
-			Iris.logger.warn("Missing Vulkan screen pass {} texture binding for {}; using a dummy texture.",
-				passLabel, sampler);
-		}
-
-		return dummy;
+		throw new IllegalStateException("Missing Vulkan screen pass " + passLabel
+			+ " texture binding for " + sampler + "; the resource must be supported explicitly");
 	}
 
 	private static boolean isFinalSourceSampler(String sampler) {
@@ -233,17 +263,28 @@ public final class IrisVulkanRenderPassBindings {
 	private static void bindUniformAliases(RenderPass pass, VulkanRenderPass backend, RenderPipeline pipeline) {
 		Map<String, GpuBufferSlice> uniforms = ((VKOnly_VulkanRenderPassAccessor) backend).iris$getUniforms();
 		List<BindGroupLayout.UniformDescription> requiredUniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
+		GpuBuffer snapshotBuffer = bindUniformSnapshot(pass, pipeline, "render pass");
 
 		for (BindGroupLayout.UniformDescription uniform : requiredUniforms) {
 			String name = uniform.name();
 
-			if (uniforms.containsKey(name)) {
+			if (name.equals(IrisVulkanUniformSnapshot.BLOCK_NAME)) {
+				if (snapshotBuffer == null) {
+					throw missingUniform("render pass", name);
+				}
+
+				continue;
+			}
+
+			GpuBufferSlice directUniform = uniforms.get(name);
+			if (directUniform != null) {
 				continue;
 			}
 
 			String source = UNIFORM_ALIASES.get(name);
-			if (source != null && uniforms.containsKey(source)) {
-				pass.setUniform(name, uniforms.get(source));
+			GpuBufferSlice aliasedUniform = source == null ? null : uniforms.get(source);
+			if (aliasedUniform != null) {
+				pass.setUniform(name, aliasedUniform);
 				continue;
 			}
 
@@ -251,15 +292,7 @@ public final class IrisVulkanRenderPassBindings {
 				continue;
 			}
 
-			if (uniform.type() == com.mojang.blaze3d.shaders.UniformType.TEXEL_BUFFER) {
-				pass.setUniform(name, dummyTexelBuffer().slice());
-			} else {
-				pass.setUniform(name, dummyUniformBuffer().slice());
-			}
-
-			if (WARNED_MISSING_UNIFORMS.add(name)) {
-				Iris.logger.warn("Missing Vulkan uniform binding for {}; using a dummy buffer.", name);
-			}
+			throw missingUniform("render pass", name);
 		}
 	}
 
@@ -291,13 +324,14 @@ public final class IrisVulkanRenderPassBindings {
 		List<String> requiredSamplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
 
 		for (String sampler : requiredSamplers) {
-			if (textures.containsKey(sampler)) {
+			TextureBinding directBinding = textureBinding(textures.get(sampler));
+			if (isUsable(directBinding)) {
 				continue;
 			}
 
 			TextureBinding binding = findTextureBinding(sampler, textures);
 
-			if (binding != null) {
+			if (isUsable(binding)) {
 				pass.bindTexture(sampler, binding.view(), binding.sampler());
 				continue;
 			}
@@ -310,22 +344,8 @@ public final class IrisVulkanRenderPassBindings {
 				continue;
 			}
 
-			TextureBinding fallback = findAnyTexture(textures);
-			if (fallback != null) {
-				pass.bindTexture(sampler, fallback.view(), fallback.sampler());
-
-				if (WARNED_MISSING_TEXTURES.add(sampler)) {
-					Iris.logger.warn("Missing Vulkan texture binding for {}; reusing an existing texture as a fallback.", sampler);
-				}
-				continue;
-			}
-
-			TextureBinding dummy = dummyTextureBinding();
-			pass.bindTexture(sampler, dummy.view(), dummy.sampler());
-
-			if (WARNED_MISSING_TEXTURES.add(sampler)) {
-				Iris.logger.warn("Missing Vulkan texture binding for {}; using a dummy texture.", sampler);
-			}
+			throw new IllegalStateException("Missing Vulkan texture binding for " + sampler
+				+ "; the resource must be supported explicitly");
 		}
 	}
 
@@ -424,7 +444,8 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private static TextureBinding findAnyTexture(Map<String, Object> textures) {
-		return textures.values().stream().map(IrisVulkanRenderPassBindings::textureBinding).filter(binding -> binding != null).findFirst().orElse(null);
+		return textures.values().stream().map(IrisVulkanRenderPassBindings::textureBinding)
+			.filter(IrisVulkanRenderPassBindings::isUsable).findFirst().orElse(null);
 	}
 
 	private static TextureBinding textureBinding(Object value) {
@@ -436,22 +457,8 @@ public final class IrisVulkanRenderPassBindings {
 		return new TextureBinding(accessor.iris$getView(), accessor.iris$getSampler());
 	}
 
-	private static GpuBuffer dummyUniformBuffer() {
-		if (dummyUniformBuffer == null || dummyUniformBuffer.isClosed()) {
-			dummyUniformBuffer = RenderSystem.getDevice().createBuffer(() -> "Iris dummy Vulkan uniform buffer",
-				GpuBuffer.USAGE_UNIFORM, 4096L);
-		}
-
-		return dummyUniformBuffer;
-	}
-
-	private static GpuBuffer dummyTexelBuffer() {
-		if (dummyTexelBuffer == null || dummyTexelBuffer.isClosed()) {
-			dummyTexelBuffer = RenderSystem.getDevice().createBuffer(() -> "Iris dummy Vulkan texel buffer",
-				GpuBuffer.USAGE_UNIFORM_TEXEL_BUFFER, 16L);
-		}
-
-		return dummyTexelBuffer;
+	private static boolean isUsable(TextureBinding binding) {
+		return binding != null && binding.view() != null && !binding.view().isClosed() && binding.sampler() != null;
 	}
 
 	private static TextureBinding dummyTextureBinding() {

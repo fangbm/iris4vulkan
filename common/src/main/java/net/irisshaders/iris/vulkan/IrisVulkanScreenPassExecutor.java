@@ -22,6 +22,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -169,7 +170,7 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	public void render() {
-		if (!graph.hasReadyFinalPass()) {
+		if (!graph.hasRunnablePasses()) {
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
@@ -216,12 +217,6 @@ public final class IrisVulkanScreenPassExecutor {
 					mode.name().toLowerCase(Locale.ROOT));
 			}
 
-			if ((colorTexture.usage() & GpuTexture.USAGE_COPY_DST) != 0) {
-				GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
-				encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
-					colorTexture.getWidth(0), colorTexture.getHeight(0));
-			}
-
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
@@ -232,12 +227,20 @@ public final class IrisVulkanScreenPassExecutor {
 		if (drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY) {
 			preflightScreenPasses(encoder, depthView);
 
-			if (matchesDiagnosticCopySelection()) {
-				renderDiagnosticCopyPass(encoder, depthView, finalSourceView, indices, indexType);
-				IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
+			boolean renderedCopy = matchesDiagnosticCopySelection() && finalSourceView != null;
+			if (renderedCopy) {
+				try {
+					renderDiagnosticCopyPass(encoder, depthView, finalSourceView, indices, indexType);
+					IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
+				} catch (RuntimeException e) {
+					renderedCopy = false;
+					Iris.logger.warn("Skipping native Vulkan diagnostic copy after an error: {}", e.getMessage());
+				}
 			}
 
-			copyFinalSourceToMain(encoder, colorTexture);
+			if (renderedCopy) {
+				copyFinalSourceToMain(encoder, colorTexture);
+			}
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
@@ -254,30 +257,51 @@ public final class IrisVulkanScreenPassExecutor {
 			|| drawMode == IrisNativeVulkan.ScreenPassDrawMode.COPY_VERTEX_FINAL_TEXTURE_FRAGMENT) {
 			preflightScreenPasses(encoder, depthView);
 
+			boolean finalPreFlipped = hasExecutableFinalPass(finalSourceView);
+			if (finalPreFlipped) {
+				IrisVulkanGbufferTargets.applyExplicitFlips("final_pre");
+			}
 			boolean renderedFinal = renderDiagnosticFinalVariantIfAvailable(encoder, depthView, finalSourceView, indices, indexType);
 
 			if (renderedFinal) {
 				IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
+			} else if (finalPreFlipped) {
+				IrisVulkanGbufferTargets.applyExplicitFlips("final_pre");
 			}
 
-			copyFinalSourceToMain(encoder, colorTexture);
+			if (renderedFinal) {
+				copyFinalSourceToMain(encoder, colorTexture);
+			}
 			IrisVulkanGbufferTargets.finishFrame();
 			return;
 		}
 
+		boolean renderedLogicalColor = false;
 		if (mode.runsLogicalPasses()) {
-			for (IrisVulkanScreenPassGraph.Node screenPass : graph.logicalPasses()) {
-				renderLogicalPassIfAvailable(encoder, screenPass, depthView, indices, indexType);
-			}
+			LogicalStageResult deferred = renderLogicalStage(encoder, graph.deferredPasses(), "deferred_pre",
+				depthView, indices, indexType);
+			LogicalStageResult composite = renderLogicalStage(encoder, graph.compositePasses(), "composite_pre",
+				depthView, indices, indexType);
+			renderedLogicalColor = deferred.renderedColor() || composite.renderedColor();
 		}
 
+		boolean finalPreFlipped = hasExecutableFinalPass(finalSourceView);
+		if (finalPreFlipped) {
+			IrisVulkanGbufferTargets.applyExplicitFlips("final_pre");
+		}
 		boolean renderedFinal = renderSelectedFinalPassIfAvailable(encoder, depthView, finalSourceView, indices, indexType);
 
 		if (renderedFinal) {
 			IrisVulkanGbufferTargets.swap(FINAL_SOURCE_TARGET);
+		} else if (finalPreFlipped) {
+			IrisVulkanGbufferTargets.applyExplicitFlips("final_pre");
 		}
 
-		copyFinalSourceToMain(encoder, colorTexture);
+		if (renderedFinal) {
+			copyTargetToMain(encoder, colorTexture, FINAL_SOURCE_TARGET);
+		} else if (graph.finalPass() == null && renderedLogicalColor) {
+			copyTargetToMain(encoder, colorTexture, 0);
+		}
 
 		IrisVulkanGbufferTargets.finishFrame();
 	}
@@ -349,24 +373,68 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		if (firstOutputView != null) {
-			descriptor.withRenderArea(new RenderArea(0, 0, firstOutputView.getWidth(0), firstOutputView.getHeight(0)));
+			descriptor.withRenderArea(renderArea(screenPass, firstOutputView));
 		}
 
 		return encoder.createRenderPass(descriptor);
 	}
 
-	private void renderLogicalPassIfAvailable(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
-											  GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+	private boolean renderLogicalPassIfAvailable(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
+															  GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
 		if (!screenPass.ready() || failedPasses.contains(screenPass) || !matchesSelection(screenPass)) {
-			return;
+			return false;
 		}
 
 		try {
 			renderLogicalPass(encoder, screenPass, depthView, indices, indexType);
+			return true;
 		} catch (RuntimeException e) {
 			failedPasses.add(screenPass);
 			Iris.logger.warn("Skipping native Vulkan screen pass {} after an error: {}", screenPass.label(), e.getMessage());
+			return false;
 		}
+	}
+
+	private LogicalStageResult renderLogicalStage(CommandEncoder encoder,
+														 List<IrisVulkanScreenPassGraph.Node> passes, String preFlipPass,
+														 GpuTextureView depthView, GpuBuffer indices, IndexType indexType) {
+		if (!hasExecutablePass(passes)) {
+			return new LogicalStageResult(false, false);
+		}
+
+		IrisVulkanGbufferTargets.applyExplicitFlips(preFlipPass);
+		boolean rendered = false;
+		boolean renderedColor = false;
+		for (IrisVulkanScreenPassGraph.Node screenPass : passes) {
+			if (renderLogicalPassIfAvailable(encoder, screenPass, depthView, indices, indexType)) {
+				rendered = true;
+				if (writesTarget(screenPass, 0)) {
+					renderedColor = true;
+				}
+			}
+		}
+
+		if (!rendered) {
+			// A stage that failed completely must not leave its pre-flips applied.
+			IrisVulkanGbufferTargets.applyExplicitFlips(preFlipPass);
+		}
+
+		return new LogicalStageResult(rendered, renderedColor);
+	}
+
+	private boolean hasExecutablePass(List<IrisVulkanScreenPassGraph.Node> passes) {
+		for (IrisVulkanScreenPassGraph.Node screenPass : passes) {
+			if (screenPass.ready() && !failedPasses.contains(screenPass) && matchesSelection(screenPass)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean hasExecutableFinalPass(GpuTextureView finalSourceView) {
+		IrisVulkanScreenPassGraph.Node finalPass = graph.finalPass();
+		return finalSourceView != null && finalPass != null && finalPass.ready()
+			&& !failedPasses.contains(finalPass) && matchesSelection(finalPass);
 	}
 
 	private boolean renderSelectedFinalPassIfAvailable(CommandEncoder encoder, GpuTextureView depthView,
@@ -375,6 +443,10 @@ public final class IrisVulkanScreenPassExecutor {
 		IrisVulkanScreenPassGraph.Node finalPass = graph.finalPass();
 
 		if (finalPass == null || !finalPass.ready() || failedPasses.contains(finalPass) || !matchesSelection(finalPass)) {
+			return false;
+		}
+		if (finalSourceView == null) {
+			Iris.logger.warn("Skipping native Vulkan final pass {} because no current-frame main-color source is available.", finalPass.label());
 			return false;
 		}
 
@@ -397,25 +469,30 @@ public final class IrisVulkanScreenPassExecutor {
 			return false;
 		}
 
-		RenderPipeline pipeline = switch (drawMode) {
-			case PACK_VERTEX_COPY_FRAGMENT -> packVertexCopyFragmentPipeline(finalPass);
-			case COPY_VERTEX_PACK_FRAGMENT -> copyVertexPackFragmentPipeline(finalPass);
-			case COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION -> copyVertexCopyFragmentFinalVersionPipeline(finalPass);
-			case COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION -> copyVertexCopyFragmentCoreVersionPipeline(finalPass);
-			case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> copyVertexFinalConstantFragmentPipeline(finalPass);
-			case COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT -> copyVertexFinalTexture150FragmentPipeline(finalPass);
-			case COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT -> copyVertexFinalTextureCoreFragmentPipeline(finalPass);
-			case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> copyVertexFinalTexelFetchFragmentPipeline(finalPass);
-			case COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT -> copyVertexFinalTexelFetchRawFragmentPipeline(finalPass);
-			case COPY_VERTEX_FINAL_TEXTURE_FRAGMENT -> copyVertexFinalTextureFragmentPipeline(finalPass);
-			default -> null;
-		};
-
-		if (pipeline == null) {
+		if (finalSourceView == null) {
+			Iris.logger.warn("Skipping native Vulkan diagnostic final pass {} because no current-frame main-color source is available.", diagnosticLabel());
 			return false;
 		}
 
 		try {
+			RenderPipeline pipeline = switch (drawMode) {
+				case PACK_VERTEX_COPY_FRAGMENT -> packVertexCopyFragmentPipeline(finalPass);
+				case COPY_VERTEX_PACK_FRAGMENT -> copyVertexPackFragmentPipeline(finalPass);
+				case COPY_VERTEX_COPY_FRAGMENT_FINAL_VERSION -> copyVertexCopyFragmentFinalVersionPipeline(finalPass);
+				case COPY_VERTEX_COPY_FRAGMENT_CORE_VERSION -> copyVertexCopyFragmentCoreVersionPipeline(finalPass);
+				case COPY_VERTEX_FINAL_CONSTANT_FRAGMENT -> copyVertexFinalConstantFragmentPipeline(finalPass);
+				case COPY_VERTEX_FINAL_TEXTURE_150_FRAGMENT -> copyVertexFinalTexture150FragmentPipeline(finalPass);
+				case COPY_VERTEX_FINAL_TEXTURE_CORE_FRAGMENT -> copyVertexFinalTextureCoreFragmentPipeline(finalPass);
+				case COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT -> copyVertexFinalTexelFetchFragmentPipeline(finalPass);
+				case COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT -> copyVertexFinalTexelFetchRawFragmentPipeline(finalPass);
+				case COPY_VERTEX_FINAL_TEXTURE_FRAGMENT -> copyVertexFinalTextureFragmentPipeline(finalPass);
+				default -> null;
+			};
+
+			if (pipeline == null) {
+				return false;
+			}
+
 			renderFinalPassWithPipeline(encoder, finalPass, pipeline, diagnosticLabel(), depthView, finalSourceView,
 				indices, indexType);
 			logDiagnosticVariantOnce();
@@ -444,7 +521,7 @@ public final class IrisVulkanScreenPassExecutor {
 		}
 
 		if (firstOutputView != null) {
-			descriptor.withRenderArea(new RenderArea(0, 0, firstOutputView.getWidth(0), firstOutputView.getHeight(0)));
+			descriptor.withRenderArea(renderArea(screenPass, firstOutputView));
 		}
 
 		try (RenderPass pass = encoder.createRenderPass(descriptor)) {
@@ -454,9 +531,7 @@ public final class IrisVulkanScreenPassExecutor {
 			pass.drawIndexed(6, 1, 0, 0, 0);
 		}
 
-		for (int logicalTarget : screenPass.drawBuffers()) {
-			IrisVulkanGbufferTargets.swap(logicalTarget);
-		}
+		applyPassFlips(screenPass);
 	}
 
 	private void renderFinalPass(CommandEncoder encoder, IrisVulkanScreenPassGraph.Node screenPass,
@@ -829,13 +904,46 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private void copyFinalSourceToMain(CommandEncoder encoder, GpuTexture colorTexture) {
-		if ((colorTexture.usage() & GpuTexture.USAGE_COPY_DST) == 0) {
+		copyTargetToMain(encoder, colorTexture, FINAL_SOURCE_TARGET);
+	}
+
+	private void copyTargetToMain(CommandEncoder encoder, GpuTexture colorTexture, int target) {
+		if (!IrisVulkanGbufferTargets.canCopyToMain(target, colorTexture)) {
 			return;
 		}
 
-		GpuTexture source = IrisVulkanGbufferTargets.currentTexture(FINAL_SOURCE_TARGET);
+		GpuTexture source = IrisVulkanGbufferTargets.currentTexture(target);
 		encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
 			colorTexture.getWidth(0), colorTexture.getHeight(0));
+	}
+
+	private static RenderArea renderArea(IrisVulkanScreenPassGraph.Node screenPass, GpuTextureView outputView) {
+		int width = outputView.getWidth(0);
+		int height = outputView.getHeight(0);
+		float scale = Math.clamp(screenPass.viewport().scale(), 0.0f, 1.0f);
+		int x = Math.clamp((int) (width * screenPass.viewport().viewportX()), 0, Math.max(0, width - 1));
+		int y = Math.clamp((int) (height * screenPass.viewport().viewportY()), 0, Math.max(0, height - 1));
+		int scaledWidth = Math.clamp((int) (width * scale), 1, width - x);
+		int scaledHeight = Math.clamp((int) (height * scale), 1, height - y);
+		return new RenderArea(x, y, scaledWidth, scaledHeight);
+	}
+
+	private static void applyPassFlips(IrisVulkanScreenPassGraph.Node screenPass) {
+		// Match CompositeRenderer: a draw buffer flips by default, explicit false
+		// suppresses that flip, and explicit true adds an independent flip.
+		for (int logicalTarget : screenPass.drawBuffers()) {
+			if (logicalTarget >= 0 && logicalTarget < IrisVulkanGbufferTargets.COLOR_TARGET_COUNT
+				&& !Boolean.FALSE.equals(screenPass.explicitFlips().get(logicalTarget))) {
+				IrisVulkanGbufferTargets.swap(logicalTarget);
+			}
+		}
+
+		screenPass.explicitFlips().forEach((logicalTarget, shouldFlip) -> {
+			if (Boolean.TRUE.equals(shouldFlip)
+				&& logicalTarget >= 0 && logicalTarget < IrisVulkanGbufferTargets.COLOR_TARGET_COUNT) {
+				IrisVulkanGbufferTargets.swap(logicalTarget);
+			}
+		});
 	}
 
 	private static GpuTextureView finalSourceView(com.mojang.blaze3d.pipeline.RenderTarget main, GpuTexture colorTexture) {
@@ -848,13 +956,23 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private GpuTextureView finalSourceViewForMode(com.mojang.blaze3d.pipeline.RenderTarget main, GpuTexture colorTexture) {
-		if (!usesIrisFinalSourceTarget()) {
-			return finalSourceView(main, colorTexture);
+		GpuTextureView liveMainView = usesIrisFinalSourceTarget() ? null : finalSourceView(main, colorTexture);
+		if (liveMainView != null) {
+			return liveMainView;
+		}
+
+		if (IrisVulkanGbufferTargets.hasCurrentFrameMainColorCopy()) {
+			if (!loggedFallbackFinalSourceFrame) {
+				loggedFallbackFinalSourceFrame = true;
+				Iris.logger.info("Using the current-frame copied main color as native Vulkan final source for {}.",
+					diagnosticLabel());
+			}
+			return IrisVulkanGbufferTargets.currentView(IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET);
 		}
 
 		if (!loggedFallbackFinalSourceFrame) {
 			loggedFallbackFinalSourceFrame = true;
-			Iris.logger.info("Using Iris final source target instead of the main framebuffer for native Vulkan {}.",
+			Iris.logger.warn("No current-frame main-color copy is available for native Vulkan {}.",
 				diagnosticLabel());
 		}
 
@@ -891,6 +1009,18 @@ public final class IrisVulkanScreenPassExecutor {
 			|| selectedPass.equals("copy")
 			|| selectedPass.equals(DIAGNOSTIC_COPY_LABEL)
 			|| selectedPass.equals("diagnostic");
+	}
+
+	private static boolean writesTarget(IrisVulkanScreenPassGraph.Node screenPass, int target) {
+		for (int drawBuffer : screenPass.drawBuffers()) {
+			if (drawBuffer == target) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private record LogicalStageResult(boolean rendered, boolean renderedColor) {
 	}
 
 	private String diagnosticLabel() {
@@ -986,9 +1116,12 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private static TextureStage stageFor(IrisVulkanScreenPassGraph.Kind kind) {
-		return kind == IrisVulkanScreenPassGraph.Kind.DEFERRED
-			? TextureStage.DEFERRED
-			: TextureStage.COMPOSITE_AND_FINAL;
+		return switch (kind) {
+			case BEGIN -> TextureStage.BEGIN;
+			case PREPARE -> TextureStage.PREPARE;
+			case DEFERRED -> TextureStage.DEFERRED;
+			case COMPOSITE, FINAL -> TextureStage.COMPOSITE_AND_FINAL;
+		};
 	}
 
 	private boolean matchesSelection(IrisVulkanScreenPassGraph.Node node) {

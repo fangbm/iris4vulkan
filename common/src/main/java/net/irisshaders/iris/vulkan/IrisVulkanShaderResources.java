@@ -22,10 +22,15 @@ import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,8 +38,10 @@ public final class IrisVulkanShaderResources {
 	private static final Pattern COMMENT_BLOCK = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL);
 	private static final Pattern COMMENT_LINE = Pattern.compile("(?m)//.*$");
 	private static final Pattern UNIFORM_BLOCK = Pattern.compile("(?m)^\\s*layout\\s*\\([^)]*\\)\\s*uniform\\s+(\\w+)\\s*\\{");
-	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+([iu]?sampler\\w+)\\s+(\\w+)\\s*(?:\\[[^]]+])?\\s*;");
-	private static final Pattern LOOSE_NON_OPAQUE_UNIFORM = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*\\[[^;=]+])?\\s*(?:=\\s*[^;]+)?;\\s*\\R?");
+	private static final Pattern STORAGE_BLOCK = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:coherent|volatile|restrict|readonly|writeonly)\\s+)*buffer\\s+([A-Za-z_][A-Za-z0-9_]*)\\b");
+	private static final Pattern BLOCK_ARRAY = Pattern.compile("(?s)\\b(?:uniform|buffer)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{.*?\\}\\s*[A-Za-z_][A-Za-z0-9_]*\\s*(?:\\[[^]]+])+");
+	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp)\\s+)*([iu]?sampler\\w+)\\s+(\\w+)\\s*((?:\\s*\\[[^]]+])+)?\\s*;");
+	private static final Pattern LOOSE_NON_OPAQUE_UNIFORM = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp|coherent|volatile|restrict|readonly|writeonly)\\s+)*([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*\\[[^;=]+])?\\s*(?:=\\s*[^;]+)?;\\s*\\R?");
 	private static final Pattern VERTEX_INPUT = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*(?:in|attribute)\\s+(?:(?:lowp|mediump|highp)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*\\[[^;=]+])?\\s*;\\s*\\R?");
 	private static final Pattern FRAGMENT_OUTPUT = Pattern.compile("(?m)^\\s*layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)\\s*out\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;\\s*\\R?");
 	private static final Pattern PLAIN_FRAGMENT_OUTPUT = Pattern.compile("(?m)^(\\s*)((?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*)out\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;\\s*\\R?");
@@ -45,12 +52,8 @@ public final class IrisVulkanShaderResources {
 	private static final Pattern SODIUM_REGION_OFFSET_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+vec3\\s+u_RegionOffset\\s*;\\s*\\R?");
 	private static final Pattern SODIUM_CURRENT_TIME_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+int\\s+u_CurrentTime\\s*;\\s*\\R?");
 	private static final Pattern SODIUM_REGION_ID_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+uint\\s+u_RegionID\\s*;\\s*\\R?");
-
-	private static final String LIGHTMAP_TEXTURE_MATRIX =
-		"mat4(0.00390625, 0.0, 0.0, 0.0, " +
-			"0.0, 0.00390625, 0.0, 0.0, " +
-			"0.0, 0.0, 0.00390625, 0.0, " +
-			"0.03125, 0.03125, 0.03125, 1.0)";
+	private static final Map<RenderPipeline, ResourceSet> RESOURCE_SETS =
+		java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
 	private IrisVulkanShaderResources() {
 	}
@@ -80,16 +83,40 @@ public final class IrisVulkanShaderResources {
 											int colorTargetCount) {
 		String patchedVertex = patchSodiumNativeVulkanUniforms(vertex, shaderKey);
 		String patchedFragment = patchSodiumNativeVulkanUniforms(fragment, shaderKey);
-		patchedVertex = patchLooseUniforms(patchedVertex);
-		patchedFragment = patchLooseUniforms(patchedFragment);
+		UniformPatch vertexUniforms = patchLooseUniforms(patchedVertex);
+		UniformPatch fragmentUniforms = patchLooseUniforms(patchedFragment);
+		LinkedHashMap<String, IrisVulkanUniformSnapshot.Field> fieldsByName = new LinkedHashMap<>();
+		LinkedHashSet<UnsupportedResource> unsupported = new LinkedHashSet<>(vertexUniforms.unsupported());
+		unsupported.addAll(fragmentUniforms.unsupported());
+		for (IrisVulkanUniformSnapshot.Field field : vertexUniforms.fields()) {
+			fieldsByName.put(field.name(), field);
+		}
+		for (IrisVulkanUniformSnapshot.Field field : fragmentUniforms.fields()) {
+			IrisVulkanUniformSnapshot.Field previous = fieldsByName.putIfAbsent(field.name(), field);
+			if (previous != null && !previous.type().equals(field.type())) {
+				unsupported.add(new UnsupportedResource("uniform", field.name(), field.type(),
+					"conflicts with " + previous.type() + " in the other shader stage"));
+			}
+		}
+		List<IrisVulkanUniformSnapshot.Field> uniformFields = List.copyOf(fieldsByName.values());
+		patchedVertex = injectUniformBlock(vertexUniforms.source(), uniformFields);
+		patchedFragment = injectUniformBlock(fragmentUniforms.source(), uniformFields);
 		patchedVertex = patchMissingVertexInputs(patchedVertex, vertexFormats);
 		patchedVertex = patchTbnMatrixOutput(patchedVertex, shaderKey);
 		patchedFragment = patchTbnMatrixInput(patchedFragment, shaderKey);
 		patchedFragment = patchFragmentOutputs(patchedFragment, collapseFragmentOutputs);
-		ResourceSet resources = ResourceSet.collect(patchedVertex, patchedFragment);
+		ResourceSet resources = ResourceSet.collect(patchedVertex, patchedFragment, uniformFields, unsupported);
+		if (!resources.unsupported().isEmpty()) {
+			throw new UnsupportedOperationException("Unsupported Vulkan shader resources: " + resources.unsupported());
+		}
 		RenderPipeline pipeline = extendPipeline(original, resources, vertexFormats, colorTargetCount);
+		RESOURCE_SETS.put(pipeline, resources);
 
 		return new Prepared(patchedVertex, patchedFragment, pipeline, resources);
+	}
+
+	public static ResourceSet resourcesFor(RenderPipeline pipeline) {
+		return RESOURCE_SETS.get(pipeline);
 	}
 
 	private static String patchSodiumNativeVulkanUniforms(String source, ShaderKey shaderKey) {
@@ -304,59 +331,11 @@ public final class IrisVulkanShaderResources {
 		return Arrays.toString(formatted);
 	}
 
-	private static String patchLooseUniforms(String source) {
-		DefineSet defines = new DefineSet();
-		String screenSampler = source.contains("colortex0") ? "colortex0" : source.contains("gcolor") ? "gcolor" : null;
-		String viewWidth = screenSampler != null ? "float(textureSize(" + screenSampler + ", 0).x)" : "1.0";
-		String viewHeight = screenSampler != null ? "float(textureSize(" + screenSampler + ", 0).y)" : "1.0";
-
-		source = removeUniform(source, "iris_NormalMat", "mat3", "mat3(1.0)", defines);
-		source = removeUniform(source, "iris_ModelViewMatInverse", "mat4", "mat4(1.0)", defines);
-		source = removeUniform(source, "iris_ProjMatInverse", "mat4", "mat4(1.0)", defines);
-		source = removeUniform(source, "iris_ModelViewMatrixInverse", "mat4", "mat4(1.0)", defines);
-		source = removeUniform(source, "iris_ProjectionMatrixInverse", "mat4", "mat4(1.0)", defines);
-		source = removeUniform(source, "iris_LightmapTextureMatrix", "mat4", LIGHTMAP_TEXTURE_MATRIX, defines);
-		source = removeUniform(source, "iris_currentAlphaTest", "float", "0.0", defines);
-		source = removeUniform(source, "iris_FogDensity", "float", "0.0", defines);
-		source = removeUniform(source, "iris_FogStart", "float", "0.0", defines);
-		source = removeUniform(source, "iris_FogEnd", "float", "1.0", defines);
-		source = removeUniform(source, "iris_FogColor", "vec4", "vec4(0.0)", defines);
-		source = removeUniform(source, "iris_ScreenSize", "vec2", "vec2(1.0)", defines);
-		source = removeUniform(source, "iris_LightUV", "ivec2", "ivec2(0)", defines);
-		source = removeUniform(source, "iris_OverlayUV", "ivec2", "ivec2(0)", defines);
-		source = removeUniform(source, "u_RegionOffset", "vec3", "vec3(0.0)", defines);
-		source = removeUniform(source, "u_CurrentTime", "int", "0", defines);
-		source = removeUniform(source, "u_RegionID", "uint", "0u", defines);
-		source = removeUniform(source, "viewWidth", "float", viewWidth, defines);
-		source = removeUniform(source, "viewHeight", "float", viewHeight, defines);
-		source = removeUniform(source, "texelWidth", "float", "(1.0 / " + viewWidth + ")", defines);
-		source = removeUniform(source, "texelHeight", "float", "(1.0 / " + viewHeight + ")", defines);
-		source = removeUniform(source, "aspectRatio", "float", "(" + viewWidth + " / max(" + viewHeight + ", 1.0))", defines);
-		source = removeUniform(source, "near", "float", "0.05", defines);
-		source = removeUniform(source, "far", "float", "1000.0", defines);
-		source = removeUniform(source, "frameTimeCounter", "float", "0.0", defines);
-		source = removeUniform(source, "frameCounter", "int", "0", defines);
-		source = removeUniform(source, "worldTime", "int", "0", defines);
-		source = removeRemainingLooseUniforms(source, defines);
-
-		return defines.apply(source);
-	}
-
-	private static String removeUniform(String source, String name, String type, String expression, DefineSet defines) {
-		Pattern pattern = Pattern.compile("(?m)^\\s*uniform\\s+" + Pattern.quote(type) + "\\s+" + Pattern.quote(name) + "\\s*;\\s*\\R?");
-		Matcher matcher = pattern.matcher(source);
-
-		if (!matcher.find()) {
-			return source;
-		}
-
-		defines.add(name, expression);
-		return matcher.replaceAll("");
-	}
-
-	private static String removeRemainingLooseUniforms(String source, DefineSet defines) {
+	private static UniformPatch patchLooseUniforms(String source) {
 		Matcher matcher = LOOSE_NON_OPAQUE_UNIFORM.matcher(source);
 		StringBuffer result = new StringBuffer(source.length());
+		LinkedHashSet<IrisVulkanUniformSnapshot.Field> fields = new LinkedHashSet<>();
+		LinkedHashSet<UnsupportedResource> unsupported = new LinkedHashSet<>();
 
 		while (matcher.find()) {
 			String type = matcher.group(1);
@@ -364,20 +343,36 @@ public final class IrisVulkanShaderResources {
 			String arraySuffix = matcher.group(3);
 
 			if (isOpaqueUniformType(type)) {
+				if (isUnsupportedOpaqueType(type)) {
+					unsupported.add(new UnsupportedResource("uniform", name, type,
+						"image and subpass resources have no Iris Vulkan binding"));
+					matcher.appendReplacement(result, "");
+				}
+
 				continue;
 			}
 
-			String expression = defaultExpression(type, arraySuffix);
-			if (expression == null) {
-				continue;
+			Optional<IrisVulkanUniformSnapshot.Field> field = IrisVulkanUniformSnapshot.field(name, type, arraySuffix);
+			if (field.isPresent()) {
+				fields.add(field.get());
+			} else {
+				unsupported.add(new UnsupportedResource("uniform", name, type,
+					IrisVulkanUniformSnapshot.unsupportedReason(name, type, arraySuffix)));
 			}
 
-			defines.add(name, expression);
 			matcher.appendReplacement(result, "");
 		}
 
 		matcher.appendTail(result);
-		return result.toString();
+		return new UniformPatch(result.toString(), List.copyOf(fields), unsupported);
+	}
+
+	private static String injectUniformBlock(String source, List<IrisVulkanUniformSnapshot.Field> fields) {
+		if (fields.isEmpty()) {
+			return source;
+		}
+
+		return insertAfterVersion(source, IrisVulkanUniformSnapshot.declaration(fields) + "\n");
 	}
 
 	private static String patchMissingVertexInputs(String source, VertexFormat[] vertexFormats) {
@@ -605,6 +600,11 @@ public final class IrisVulkanShaderResources {
 		return normalized.contains("sampler") || normalized.contains("image") || normalized.startsWith("subpassinput");
 	}
 
+	private static boolean isUnsupportedOpaqueType(String type) {
+		String normalized = type.toLowerCase();
+		return normalized.contains("image") || normalized.startsWith("subpassinput");
+	}
+
 	private static String defaultExpression(String type, String arraySuffix) {
 		String elementExpression = defaultElementExpression(type);
 
@@ -689,22 +689,55 @@ public final class IrisVulkanShaderResources {
 	public record Prepared(String vertex, String fragment, RenderPipeline pipeline, ResourceSet resources) {
 	}
 
+	private record UniformPatch(String source, List<IrisVulkanUniformSnapshot.Field> fields,
+								Set<UnsupportedResource> unsupported) {
+	}
+
 	public record TexelBuffer(String name, GpuFormat format) {
 	}
 
-	public record ResourceSet(Set<String> samplers, Set<String> uniformBuffers, Set<TexelBuffer> texelBuffers) {
-		static ResourceSet collect(String vertex, String fragment) {
+	public record SamplerRequirement(String name, String type) {
+	}
+
+	public record UnsupportedResource(String kind, String name, String type, String reason) {
+	}
+
+	public record ResourceSet(Set<String> samplers, Set<String> uniformBuffers, Set<TexelBuffer> texelBuffers,
+							 List<IrisVulkanUniformSnapshot.Field> uniformFields, Set<SamplerRequirement> samplerRequirements,
+							 Set<UnsupportedResource> unsupported) {
+		static ResourceSet collect(String vertex, String fragment, List<IrisVulkanUniformSnapshot.Field> uniformFields,
+									Set<UnsupportedResource> unsupported) {
 			LinkedHashSet<String> samplers = new LinkedHashSet<>();
 			LinkedHashSet<String> uniformBuffers = new LinkedHashSet<>();
 			LinkedHashSet<TexelBuffer> texelBuffers = new LinkedHashSet<>();
+			LinkedHashSet<SamplerRequirement> samplerRequirements = new LinkedHashSet<>();
 
-			collect(stripComments(vertex), samplers, uniformBuffers, texelBuffers);
-			collect(stripComments(fragment), samplers, uniformBuffers, texelBuffers);
+			collect(stripComments(vertex), samplers, uniformBuffers, texelBuffers, samplerRequirements, unsupported);
+			collect(stripComments(fragment), samplers, uniformBuffers, texelBuffers, samplerRequirements, unsupported);
 
-			return new ResourceSet(Set.copyOf(samplers), Set.copyOf(uniformBuffers), Set.copyOf(texelBuffers));
+			return new ResourceSet(orderedSet(samplers), orderedSet(uniformBuffers), orderedSet(texelBuffers),
+				List.copyOf(uniformFields), orderedSet(samplerRequirements), orderedSet(unsupported));
 		}
 
-		private static void collect(String source, Set<String> samplers, Set<String> uniformBuffers, Set<TexelBuffer> texelBuffers) {
+		private static <T> Set<T> orderedSet(Set<T> values) {
+			return Collections.unmodifiableSet(new LinkedHashSet<>(values));
+		}
+
+		private static void collect(String source, Set<String> samplers, Set<String> uniformBuffers,
+								Set<TexelBuffer> texelBuffers, Set<SamplerRequirement> samplerRequirements,
+								Set<UnsupportedResource> unsupported) {
+			Matcher storageMatcher = STORAGE_BLOCK.matcher(source);
+			while (storageMatcher.find()) {
+				unsupported.add(new UnsupportedResource("ssbo", storageMatcher.group(1), "buffer",
+					"storage-buffer resources have no Iris Vulkan binding"));
+			}
+
+			Matcher blockArrayMatcher = BLOCK_ARRAY.matcher(source);
+			while (blockArrayMatcher.find()) {
+				unsupported.add(new UnsupportedResource("uniform", blockArrayMatcher.group(1), "block array",
+					"uniform and storage-buffer arrays are not represented"));
+			}
+
 			Matcher uniformMatcher = UNIFORM_BLOCK.matcher(source);
 			while (uniformMatcher.find()) {
 				if (uniformMatcher.group(0).contains("push_constant")) {
@@ -718,13 +751,28 @@ public final class IrisVulkanShaderResources {
 			while (samplerMatcher.find()) {
 				String type = samplerMatcher.group(1);
 				String name = samplerMatcher.group(2);
+				String arraySuffix = samplerMatcher.group(3);
+				samplerRequirements.add(new SamplerRequirement(name, type));
+
+				if (arraySuffix != null && !arraySuffix.isBlank()) {
+					unsupported.add(new UnsupportedResource("sampler", name, type,
+						"sampler arrays are not represented"));
+					continue;
+				}
 
 				if (isSamplerBuffer(type)) {
 					texelBuffers.add(new TexelBuffer(name, texelFormat(type)));
+					unsupported.add(new UnsupportedResource("sampler", name, type, "texel-buffer resource has no Iris Vulkan binding"));
+				} else if (!isSupportedSamplerType(type)) {
+					unsupported.add(new UnsupportedResource("sampler", name, type, "opaque sampler type is not representable by the current Vulkan texture path"));
 				} else {
 					samplers.add(name);
 				}
 			}
+		}
+
+		private static boolean isSupportedSamplerType(String type) {
+			return type.equals("sampler2D") || type.equals("isampler2D") || type.equals("usampler2D");
 		}
 	}
 

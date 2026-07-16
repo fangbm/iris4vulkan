@@ -1,6 +1,5 @@
 package net.irisshaders.iris.vulkan;
 
-import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -11,10 +10,10 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.backend.IrisBackend;
-import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.samplers.IrisSamplers;
+import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.minecraft.client.Minecraft;
 import org.joml.Vector4fc;
 
@@ -28,14 +27,15 @@ public final class IrisVulkanGbufferTargets {
 	public static final int FINAL_SOURCE_TARGET = 3;
 	private static final int[] DEFAULT_TERRAIN_DRAW_BUFFERS = {6, 7, 3};
 
-	private static final Target[] targets = new Target[COLOR_TARGET_COUNT];
-	private static int width;
-	private static int height;
-	private static GpuFormat format;
+	private static final IrisVulkanTargetModel targetModel = new IrisVulkanTargetModel();
 	private static boolean frameOpen;
 	private static boolean frameActive;
+	private static boolean currentFrameMainColorCopyAvailable;
 	private static int[] activeDrawBuffers = DEFAULT_TERRAIN_DRAW_BUFFERS;
 	private static boolean loggedCapture;
+	private static GpuTextureView depthTexture0;
+	private static GpuTextureView depthTexture1;
+	private static GpuTextureView depthTexture2;
 
 	private IrisVulkanGbufferTargets() {
 	}
@@ -47,6 +47,9 @@ public final class IrisVulkanGbufferTargets {
 
 		frameOpen = true;
 		frameActive = false;
+		currentFrameMainColorCopyAvailable = false;
+		loggedCapture = false;
+		activeDrawBuffers = Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length);
 	}
 
 	public static boolean rewriteMainRenderPass(CommandEncoder encoder, RenderPassDescriptor descriptor) {
@@ -72,6 +75,10 @@ public final class IrisVulkanGbufferTargets {
 			return false;
 		}
 
+		if (first.textureView() == null) {
+			return false;
+		}
+
 		GpuTexture colorTexture = first.textureView().texture();
 		GpuTexture mainColorTexture = Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTexture();
 
@@ -84,11 +91,22 @@ public final class IrisVulkanGbufferTargets {
 		if (drawBuffers.length == 0) {
 			drawBuffers = DEFAULT_TERRAIN_DRAW_BUFFERS;
 		}
+		if (!validDrawBuffers(drawBuffers)) {
+			Iris.logger.warn("Ignoring invalid native Vulkan draw-buffer selection {}; using the safe terrain defaults.",
+				Arrays.toString(drawBuffers));
+			drawBuffers = DEFAULT_TERRAIN_DRAW_BUFFERS;
+		}
 
-		ensure(colorTexture);
+		if (ensure(colorTexture)) {
+			frameActive = false;
+			currentFrameMainColorCopyAvailable = false;
+		}
+		if (!ready()) {
+			return false;
+		}
 
 		if (!frameActive) {
-			seedTargets(encoder, colorTexture);
+			currentFrameMainColorCopyAvailable = seedTargets(encoder, colorTexture);
 			frameActive = true;
 		}
 
@@ -120,7 +138,8 @@ public final class IrisVulkanGbufferTargets {
 	}
 
 	public static int[] drawBuffersForAttachments(List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments) {
-		if (!ready() || colorAttachments.size() != activeDrawBuffers.length) {
+		if (!ready() || colorAttachments == null || colorAttachments.size() != activeDrawBuffers.length
+			|| !validDrawBuffers(activeDrawBuffers)) {
 			return new int[0];
 		}
 
@@ -136,31 +155,74 @@ public final class IrisVulkanGbufferTargets {
 	}
 
 	public static void ensureForFinalPass(CommandEncoder encoder, GpuTexture colorTexture) {
-		ensure(colorTexture);
+		if (ensure(colorTexture)) {
+			frameActive = false;
+			currentFrameMainColorCopyAvailable = false;
+		}
 
-		if (!frameActive) {
-			seedTargets(encoder, colorTexture);
+		if (!frameActive && ready()) {
+			currentFrameMainColorCopyAvailable = seedTargets(encoder, colorTexture);
 			frameActive = true;
 		}
 	}
 
+	public static boolean hasCurrentFrameMainColorCopy() {
+		return frameActive && currentFrameMainColorCopyAvailable;
+	}
+
+	public static boolean canCopyToMain(int target, GpuTexture mainColorTexture) {
+		return targetModel.canCopyTo(target, mainColorTexture);
+	}
+
 	public static GpuTexture currentTexture(int index) {
-		return targets[index].currentTexture();
+		return targetModel.currentTexture(index);
 	}
 
 	public static GpuTextureView currentView(int index) {
-		return targets[index].currentView();
+		return targetModel.currentView(index);
 	}
 
 	public static GpuTextureView nextView(int index) {
-		return targets[index].nextView();
+		return targetModel.nextView(index);
 	}
 
 	public static void swap(int index) {
-		targets[index].swap();
+		targetModel.swap(index);
+	}
+
+	public static void selectMain(int index) {
+		targetModel.select(index, false);
+	}
+
+	public static void selectAlt(int index) {
+		targetModel.select(index, true);
+	}
+
+	public static boolean isAlt(int index) {
+		return targetModel.isAlt(index);
+	}
+
+	public static void applyExplicitFlips(String pass) {
+		targetModel.applyExplicitFlips(pass);
+	}
+
+	public static void clearConfiguredTargets(CommandEncoder encoder) {
+		targetModel.clearConfiguredTargets(encoder);
 	}
 
 	public static void bindSamplers(RenderPass pass, GpuTextureView depthView) {
+		bindSamplers(pass, depthView, depthView, depthView);
+	}
+
+	public static void bindSamplers(RenderPass pass) {
+		bindSamplers(pass, depthTexture0, depthTexture1, depthTexture2);
+	}
+
+	public static void bindSamplers(RenderPass pass, GpuTextureView depth0, GpuTextureView depth1, GpuTextureView depth2) {
+		if (!ready()) {
+			return;
+		}
+
 		GpuSampler sampler = IrisSamplers.getTerrainCache(1);
 
 		for (int i = 0; i < COLOR_TARGET_COUNT; i++) {
@@ -181,16 +243,37 @@ public final class IrisVulkanGbufferTargets {
 		bindAlias(pass, "gaux3", 3, sampler);
 		bindAlias(pass, "gaux4", 4, sampler);
 
-		if (depthView != null && !depthView.isClosed()) {
-			pass.bindTexture("depthtex0", depthView, sampler);
-			pass.bindTexture("depthtex1", depthView, sampler);
-			pass.bindTexture("depthtex2", depthView, sampler);
-			pass.bindTexture("gdepthtex", depthView, sampler);
+		bindDepth(pass, "depthtex0", depth0, sampler);
+		bindDepth(pass, "depthtex1", depth1, sampler);
+		bindDepth(pass, "depthtex2", depth2, sampler);
+		bindDepth(pass, "gdepthtex", depth0, sampler);
+	}
+
+	public static void setDepthTextureViews(GpuTextureView depth0, GpuTextureView depth1, GpuTextureView depth2) {
+		depthTexture0 = depth0;
+		depthTexture1 = depth1;
+		depthTexture2 = depth2;
+	}
+
+	public static void clearDepthTextureViews() {
+		setDepthTextureViews(null, null, null);
+	}
+
+	public static GpuTextureView depthSamplerView(String sampler) {
+		if (sampler == null) {
+			return null;
 		}
+
+		return switch (sampler) {
+			case "depthtex0", "gdepthtex" -> depthTexture0;
+			case "depthtex1" -> depthTexture1;
+			case "depthtex2" -> depthTexture2;
+			default -> null;
+		};
 	}
 
 	public static GpuTextureView colorSamplerView(String sampler) {
-		if (!ready()) {
+		if (!ready() || sampler == null) {
 			return null;
 		}
 
@@ -219,25 +302,17 @@ public final class IrisVulkanGbufferTargets {
 	public static void finishFrame() {
 		frameOpen = false;
 		frameActive = false;
+		currentFrameMainColorCopyAvailable = false;
+		activeDrawBuffers = Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length);
 	}
 
 	public static void close() {
-		destroyTargets();
+		targetModel.close();
 		frameOpen = false;
 		frameActive = false;
-	}
-
-	private static void destroyTargets() {
-		for (int i = 0; i < targets.length; i++) {
-			if (targets[i] != null) {
-				targets[i].close();
-				targets[i] = null;
-			}
-		}
-
-		width = 0;
-		height = 0;
-		format = null;
+		currentFrameMainColorCopyAvailable = false;
+		activeDrawBuffers = Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length);
+		clearDepthTextureViews();
 	}
 
 	private static boolean shouldCaptureCurrentPhase() {
@@ -292,95 +367,47 @@ public final class IrisVulkanGbufferTargets {
 			|| normalized.contains("horizon");
 	}
 
-	private static void ensure(GpuTexture source) {
-		int newWidth = source.getWidth(0);
-		int newHeight = source.getHeight(0);
-		GpuFormat newFormat = source.getFormat();
-
-		if (ready() && width == newWidth && height == newHeight && format == newFormat) {
-			return;
+	private static boolean ensure(GpuTexture source) {
+		if (source == null || source.isClosed()) {
+			return false;
 		}
 
-		destroyTargets();
-		width = newWidth;
-		height = newHeight;
-		format = newFormat;
-		int usage = GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_COPY_SRC | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_RENDER_ATTACHMENT;
-
-		for (int i = 0; i < COLOR_TARGET_COUNT; i++) {
-			targets[i] = new Target(i, usage, newFormat, newWidth, newHeight);
+		ProgramSet programSet = Iris.getCurrentPack()
+			.map(pack -> pack.getProgramSet(Iris.getCurrentDimension()))
+			.orElse(null);
+		if (programSet == null) {
+			return targetModel.configureDefaults(source.getWidth(0), source.getHeight(0), source.getFormat());
+		} else {
+			return targetModel.configure(programSet, source.getWidth(0), source.getHeight(0), source.getFormat());
 		}
 	}
 
 	private static boolean ready() {
-		for (Target target : targets) {
-			if (target == null || !target.ready()) {
+		return targetModel.ready();
+	}
+
+	private static boolean validDrawBuffers(int[] drawBuffers) {
+		boolean[] seen = new boolean[COLOR_TARGET_COUNT];
+		for (int drawBuffer : drawBuffers) {
+			if (drawBuffer < 0 || drawBuffer >= COLOR_TARGET_COUNT || seen[drawBuffer]) {
 				return false;
 			}
+			seen[drawBuffer] = true;
 		}
-
 		return true;
 	}
 
-	private static void seedTargets(CommandEncoder encoder, GpuTexture colorTexture) {
-		for (Target target : targets) {
-			encoder.copyTextureToTexture(colorTexture, target.currentTexture(), 0, 0, 0, 0, 0, width, height);
-		}
+	private static boolean seedTargets(CommandEncoder encoder, GpuTexture colorTexture) {
+		return targetModel.seed(encoder, colorTexture);
 	}
 
 	private static void bindAlias(RenderPass pass, String name, int target, GpuSampler sampler) {
 		pass.bindTexture(name, currentView(target), sampler);
 	}
 
-	private static final class Target {
-		private final GpuTexture[] textures = new GpuTexture[2];
-		private final GpuTextureView[] views = new GpuTextureView[2];
-		private int current;
-
-		private Target(int index, int usage, GpuFormat format, int width, int height) {
-			textures[0] = RenderSystem.getDevice().createTexture(() -> "Iris native Vulkan colortex" + index + " A",
-				usage, format, width, height, 1, 1);
-			textures[1] = RenderSystem.getDevice().createTexture(() -> "Iris native Vulkan colortex" + index + " B",
-				usage, format, width, height, 1, 1);
-			views[0] = RenderSystem.getDevice().createTextureView(textures[0]);
-			views[1] = RenderSystem.getDevice().createTextureView(textures[1]);
-		}
-
-		private boolean ready() {
-			return textures[0] != null && !textures[0].isClosed()
-				&& textures[1] != null && !textures[1].isClosed()
-				&& views[0] != null && !views[0].isClosed()
-				&& views[1] != null && !views[1].isClosed();
-		}
-
-		private GpuTexture currentTexture() {
-			return textures[current];
-		}
-
-		private GpuTextureView currentView() {
-			return views[current];
-		}
-
-		private GpuTextureView nextView() {
-			return views[1 - current];
-		}
-
-		private void swap() {
-			current = 1 - current;
-		}
-
-		private void close() {
-			for (GpuTextureView view : views) {
-				if (view != null) {
-					view.close();
-				}
-			}
-
-			for (GpuTexture texture : textures) {
-				if (texture != null) {
-					texture.close();
-				}
-			}
+	private static void bindDepth(RenderPass pass, String name, GpuTextureView view, GpuSampler sampler) {
+		if (view != null && !view.isClosed()) {
+			pass.bindTexture(name, view, sampler);
 		}
 	}
 }

@@ -43,6 +43,7 @@ public final class IrisVulkanScreenPassExecutor {
 	private static final String COPY_VERTEX_FINAL_TEXELFETCH_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texelfetch_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXELFETCH_RAW_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texelfetch_raw_fragment";
 	private static final String COPY_VERTEX_FINAL_TEXTURE_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texture_fragment";
+	private static final String FORMAT_CONVERTING_PRESENT_LABEL = "diagnostic/format_converting_present";
 	private static final Pattern FRAGMENT_INPUT = Pattern.compile("(?m)^\\s*((?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*)in\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\[[^]]+])?\\s*;");
 	private static final String DIAGNOSTIC_COPY_VERTEX = """
 		#version 150
@@ -87,6 +88,8 @@ public final class IrisVulkanScreenPassExecutor {
 	private RenderPipeline copyVertexFinalTexelFetchFragmentPipeline;
 	private RenderPipeline copyVertexFinalTexelFetchRawFragmentPipeline;
 	private RenderPipeline copyVertexFinalTextureFragmentPipeline;
+	private RenderPipeline formatConvertingPresentPipeline;
+	private GpuFormat formatConvertingPresentFormat;
 	private boolean loggedBuildOnlyFrame;
 	private boolean loggedDrawDisabledFrame;
 	private boolean loggedDiagnosticCopyFrame;
@@ -102,6 +105,9 @@ public final class IrisVulkanScreenPassExecutor {
 	private boolean loggedCopyVertexFinalTextureFragmentFrame;
 	private boolean loggedDirectFinalSourceFrame;
 	private boolean loggedFallbackFinalSourceFrame;
+	private boolean loggedDirectCopy;
+	private boolean loggedFormatConvertingPresent;
+	private GpuFormat failedFormatConvertingPresentFormat;
 	private boolean preflightComplete;
 
 	public IrisVulkanScreenPassExecutor(IrisVulkanScreenPassGraph graph, IrisNativeVulkan.ScreenPassMode mode,
@@ -168,6 +174,12 @@ public final class IrisVulkanScreenPassExecutor {
 		if (copyVertexFinalTextureFragmentPipeline != null) {
 			IrisNativeVulkan.unregisterCustomPipelineSource(copyVertexFinalTextureFragmentPipeline);
 			copyVertexFinalTextureFragmentPipeline = null;
+		}
+
+		if (formatConvertingPresentPipeline != null) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(formatConvertingPresentPipeline);
+			formatConvertingPresentPipeline = null;
+			formatConvertingPresentFormat = null;
 		}
 	}
 
@@ -705,9 +717,31 @@ public final class IrisVulkanScreenPassExecutor {
 		return diagnosticCopyPipeline;
 	}
 
+	private RenderPipeline formatConvertingPresentPipeline(GpuFormat outputFormat) {
+		if (formatConvertingPresentPipeline != null && formatConvertingPresentFormat != outputFormat) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(formatConvertingPresentPipeline);
+			formatConvertingPresentPipeline = null;
+			formatConvertingPresentFormat = null;
+		}
+
+		if (formatConvertingPresentPipeline == null) {
+			formatConvertingPresentPipeline = createDiagnosticPipeline(FORMAT_CONVERTING_PRESENT_LABEL, outputFormat);
+			formatConvertingPresentFormat = outputFormat;
+			IrisNativeVulkan.registerCustomPipelineSource(formatConvertingPresentPipeline,
+				FORMAT_CONVERTING_PRESENT_LABEL, DIAGNOSTIC_COPY_VERTEX,
+				"#version 150\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY, true);
+		}
+
+		return formatConvertingPresentPipeline;
+	}
+
 	private RenderPipeline createDiagnosticPipeline(String label) {
 		GpuFormat format = IrisVulkanGbufferTargets.effectiveFormat(FINAL_SOURCE_TARGET,
 			IrisVulkanTargetFormat.defaultTargetFormat(FINAL_SOURCE_TARGET, IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET, null));
+		return createDiagnosticPipeline(label, format);
+	}
+
+	private RenderPipeline createDiagnosticPipeline(String label, GpuFormat format) {
 		return RenderPipeline.builder()
 			.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 			.withLocation(Identifier.fromNamespaceAndPath("iris", "vulkan/screen/" + label))
@@ -912,13 +946,64 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private void copyTargetToMain(CommandEncoder encoder, GpuTexture colorTexture, int target) {
-		if (!IrisVulkanGbufferTargets.canCopyToMain(target, colorTexture)) {
+		GpuTexture source = IrisVulkanGbufferTargets.currentTexture(target);
+		if (source == null || source.isClosed() || colorTexture == null || colorTexture.isClosed()
+			|| source == colorTexture) {
 			return;
 		}
 
-		GpuTexture source = IrisVulkanGbufferTargets.currentTexture(target);
-		encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
-			colorTexture.getWidth(0), colorTexture.getHeight(0));
+		if (IrisVulkanGbufferTargets.canCopyToMain(target, colorTexture)) {
+			if (!loggedDirectCopy) {
+				loggedDirectCopy = true;
+				Iris.logger.info("Presenting native Vulkan screen-pass target {} with direct texture copy (format {}).",
+					target, source.getFormat());
+			}
+
+			encoder.copyTextureToTexture(source, colorTexture, 0, 0, 0, 0, 0,
+				colorTexture.getWidth(0), colorTexture.getHeight(0));
+			return;
+		}
+
+		if (failedFormatConvertingPresentFormat == colorTexture.getFormat()) {
+			return;
+		}
+
+		try {
+			presentWithFormatConversion(encoder, source, colorTexture, target);
+		} catch (RuntimeException exception) {
+			failedFormatConvertingPresentFormat = colorTexture.getFormat();
+			Iris.logger.warn("Disabling native Vulkan fullscreen present for output format {} after an error: {}",
+				colorTexture.getFormat(), exception.getMessage());
+		}
+	}
+
+	private void presentWithFormatConversion(CommandEncoder encoder, GpuTexture source, GpuTexture colorTexture, int target) {
+		GpuTextureView sourceView = IrisVulkanGbufferTargets.currentView(target);
+		GpuTextureView outputView = Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTextureView();
+		if (sourceView == null || sourceView.isClosed() || outputView == null || outputView.isClosed()
+			|| sourceView.texture() == outputView.texture()) {
+			return;
+		}
+
+		RenderPipeline pipeline = formatConvertingPresentPipeline(colorTexture.getFormat());
+		if (!loggedFormatConvertingPresent) {
+			loggedFormatConvertingPresent = true;
+			Iris.logger.info("Presenting native Vulkan screen-pass target {} with fullscreen present ({}x{} {} -> {}x{} {}; format conversion/scaling as needed).",
+				target, source.getWidth(0), source.getHeight(0), source.getFormat(),
+				colorTexture.getWidth(0), colorTexture.getHeight(0), colorTexture.getFormat());
+		}
+
+		try (RenderPass pass = encoder.createRenderPass(() -> "Iris native Vulkan " + FORMAT_CONVERTING_PRESENT_LABEL,
+			outputView, java.util.Optional.empty())) {
+			pass.setPipeline(pipeline);
+			IrisVulkanRenderPassBindings.prepareScreenPassResources(pass, FORMAT_CONVERTING_PRESENT_LABEL,
+				TextureStage.COMPOSITE_AND_FINAL, null, sourceView);
+			GpuBuffer indices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).getBuffer(6);
+			IndexType indexType = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).type();
+			pass.setIndexBuffer(indices, indexType);
+			pass.setVertexBuffer(0, FullScreenQuadRenderer.INSTANCE.getQuad().slice());
+			pass.drawIndexed(6, 1, 0, 0, 0);
+		}
 	}
 
 	private static RenderArea renderArea(IrisVulkanScreenPassGraph.Node screenPass, GpuTextureView outputView) {

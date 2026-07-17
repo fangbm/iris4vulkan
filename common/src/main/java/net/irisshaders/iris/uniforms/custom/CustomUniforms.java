@@ -20,8 +20,11 @@ import net.irisshaders.iris.gl.uniform.LocationalUniformHolder;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.irisshaders.iris.parsing.IrisFunctions;
 import net.irisshaders.iris.parsing.IrisOptions;
+import net.irisshaders.iris.parsing.MatrixType;
 import net.irisshaders.iris.parsing.VectorType;
 import net.irisshaders.iris.uniforms.custom.cached.CachedUniform;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import org.joml.Vector2f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
@@ -280,7 +283,7 @@ public class CustomUniforms implements FunctionContext {
 			case "bool" -> value.booleanReturn;
 			case "int" -> value.intReturn;
 			case "float" -> value.floatReturn;
-			case "vec2", "vec3", "vec4" -> value.objectReturn;
+			case "vec2", "vec3", "vec4", "mat4" -> value.objectReturn;
 			default -> throw new AssertionError("Unhandled custom uniform type: " + type);
 		}));
 	}
@@ -307,6 +310,7 @@ public class CustomUniforms implements FunctionContext {
 				case Vector2f vector -> new Vector2f(vector);
 				case Vector3f vector -> new Vector3f(vector);
 				case Vector4f vector -> new Vector4f(vector);
+				case Matrix4fc matrix -> new Matrix4f(matrix);
 				default -> value;
 			};
 		}
@@ -319,6 +323,7 @@ public class CustomUniforms implements FunctionContext {
 		if (type == VectorType.VEC2) return "vec2";
 		if (type == VectorType.VEC3) return "vec3";
 		if (type == VectorType.VEC4) return "vec4";
+		if (type == MatrixType.MAT4) return "mat4";
 		return null;
 	}
 

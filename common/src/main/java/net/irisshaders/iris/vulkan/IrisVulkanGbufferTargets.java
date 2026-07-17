@@ -1,6 +1,7 @@
 package net.irisshaders.iris.vulkan;
 
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
@@ -18,6 +19,7 @@ import net.minecraft.client.Minecraft;
 import org.joml.Vector4fc;
 
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -134,7 +136,23 @@ public final class IrisVulkanGbufferTargets {
 			return pipeline;
 		}
 
-		return IrisNativeVulkan.compatiblePipelineForGbufferPass(pipeline, attachmentCount);
+		List<GpuFormat> attachmentFormats = new ArrayList<>(attachmentCount);
+		for (int i = 0; i < attachmentCount; i++) {
+			RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = colorAttachments.get(i);
+			GpuTextureView view = attachment.textureView();
+			if (view == null || view.isClosed()) {
+				return pipeline;
+			}
+
+			GpuTexture texture = view.texture();
+			if (texture == null || texture.isClosed()) {
+				return pipeline;
+			}
+
+			attachmentFormats.add(texture.getFormat());
+		}
+
+		return IrisNativeVulkan.compatiblePipelineForGbufferPass(pipeline, attachmentFormats);
 	}
 
 	public static int[] drawBuffersForAttachments(List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments) {
@@ -184,6 +202,10 @@ public final class IrisVulkanGbufferTargets {
 
 	public static GpuTextureView nextView(int index) {
 		return targetModel.nextView(index);
+	}
+
+	public static GpuFormat effectiveFormat(int index, GpuFormat plannedFormat) {
+		return targetModel.effectiveFormat(index, plannedFormat);
 	}
 
 	public static void swap(int index) {

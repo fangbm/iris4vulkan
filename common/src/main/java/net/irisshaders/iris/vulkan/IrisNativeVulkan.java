@@ -1,5 +1,6 @@
 package net.irisshaders.iris.vulkan;
 
+import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.preprocessor.GlslPreprocessor;
@@ -180,14 +181,20 @@ public final class IrisNativeVulkan {
 		failedPipelines.removeIf(key -> key.renderPipeline() == renderPipeline);
 	}
 
-	public static RenderPipeline compatiblePipelineForGbufferPass(RenderPipeline renderPipeline, int attachmentCount) {
-		if (attachmentCount <= 0 || renderPipeline.getColorTargetStates().length == attachmentCount) {
+	public static RenderPipeline compatiblePipelineForGbufferPass(RenderPipeline renderPipeline, List<GpuFormat> attachmentFormats) {
+		if (attachmentFormats == null || attachmentFormats.isEmpty()) {
 			return renderPipeline;
 		}
 
-		CompatiblePipelineKey key = new CompatiblePipelineKey(renderPipeline, attachmentCount);
+		List<GpuFormat> formats = List.copyOf(attachmentFormats);
+		ColorTargetState[] originalStates = renderPipeline.getColorTargetStates();
+		if (originalStates.length == formats.size() && matchesFormats(originalStates, formats)) {
+			return renderPipeline;
+		}
+
+		CompatiblePipelineKey key = new CompatiblePipelineKey(renderPipeline, formats);
 		return compatiblePipelines.computeIfAbsent(key, ignored -> {
-			ColorTargetState[] colorTargetStates = createCompatibleColorTargetStates(renderPipeline, attachmentCount);
+			ColorTargetState[] colorTargetStates = createCompatibleColorTargetStates(renderPipeline, formats);
 			VertexFormat[] vertexFormats = renderPipeline.getVertexFormatBindings().clone();
 			ShaderDefines shaderDefines = renderPipeline.getShaderDefines();
 			RenderPipeline compatible = net.irisshaders.iris.mixin.vulkan.VKOnly_RenderPipelineAccessor.iris$create(
@@ -208,15 +215,26 @@ public final class IrisNativeVulkan {
 		});
 	}
 
-	private static ColorTargetState[] createCompatibleColorTargetStates(RenderPipeline renderPipeline, int attachmentCount) {
-		ColorTargetState[] colorTargetStates = IrisVulkanShaderResources.createColorTargetStates(attachmentCount);
+	private static ColorTargetState[] createCompatibleColorTargetStates(RenderPipeline renderPipeline, List<GpuFormat> attachmentFormats) {
 		ColorTargetState[] originalStates = renderPipeline.getColorTargetStates();
+		ColorTargetState[] colorTargetStates = new ColorTargetState[attachmentFormats.size()];
 
-		if (originalStates.length > 0) {
-			colorTargetStates[0] = originalStates[0];
+		for (int i = 0; i < attachmentFormats.size(); i++) {
+			ColorTargetState original = i < originalStates.length ? originalStates[i] : ColorTargetState.DEFAULT;
+			colorTargetStates[i] = new ColorTargetState(original.blendFunction(), attachmentFormats.get(i), original.writeMask());
 		}
 
 		return colorTargetStates;
+	}
+
+	private static boolean matchesFormats(ColorTargetState[] colorTargetStates, List<GpuFormat> attachmentFormats) {
+		for (int i = 0; i < attachmentFormats.size(); i++) {
+			if (colorTargetStates[i].format() != attachmentFormats.get(i)) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	public static int[] getDrawBuffersForCurrentPhase() {
@@ -862,7 +880,7 @@ public final class IrisNativeVulkan {
 	private record CacheKey(VulkanDevice device, RenderPipeline renderPipeline, Object source) {
 	}
 
-	private record CompatiblePipelineKey(RenderPipeline renderPipeline, int attachmentCount) {
+	private record CompatiblePipelineKey(RenderPipeline renderPipeline, List<GpuFormat> attachmentFormats) {
 	}
 
 	private record CustomPipelineSource(String name, String vertex, String fragment, boolean collapseFragmentOutputs) {

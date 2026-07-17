@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 public final class IrisVulkanScreenPassGraph {
 	private final List<Node> beginPasses;
@@ -92,8 +93,9 @@ public final class IrisVulkanScreenPassGraph {
 
 	public void destroy() {
 		for (Node node : nodes) {
-			if (node.ready()) {
-				IrisNativeVulkan.unregisterCustomPipelineSource(node.pipeline());
+			RenderPipeline pipeline = node.existingPipeline();
+			if (pipeline != null) {
+				IrisNativeVulkan.unregisterCustomPipelineSource(pipeline);
 			}
 		}
 	}
@@ -113,7 +115,7 @@ public final class IrisVulkanScreenPassGraph {
 
 	public record Node(Kind kind, String label, String sourceName, int[] drawBuffers, List<String> samplers,
 					   Map<Integer, Boolean> explicitFlips, Set<Integer> mipmappedBuffers, ViewportData viewport,
-					   boolean collapseOutputs, RenderPipeline pipeline, String vertexSource, String fragmentSource,
+					   boolean collapseOutputs, PipelineHandle pipelineHandle, String vertexSource, String fragmentSource,
 					   Status status, String failureReason) {
 		public Node {
 			drawBuffers = drawBuffers == null ? new int[0] : Arrays.copyOf(drawBuffers, drawBuffers.length);
@@ -123,8 +125,8 @@ public final class IrisVulkanScreenPassGraph {
 			viewport = viewport == null ? ViewportData.defaultValue() : viewport;
 			failureReason = failureReason == null ? "" : failureReason;
 
-			if (status == Status.READY && pipeline == null) {
-				throw new IllegalArgumentException("Ready Vulkan screen pass nodes must have a pipeline");
+			if (status == Status.READY && pipelineHandle == null) {
+				throw new IllegalArgumentException("Ready Vulkan screen pass nodes must have a pipeline handle");
 			}
 		}
 
@@ -134,11 +136,54 @@ public final class IrisVulkanScreenPassGraph {
 		}
 
 		public boolean ready() {
-			return status == Status.READY && pipeline != null;
+			return status == Status.READY && pipelineHandle != null && !pipelineHandle.failed();
+		}
+
+		public RenderPipeline pipeline() {
+			return pipelineHandle == null ? null : pipelineHandle.get();
+		}
+
+		public RenderPipeline existingPipeline() {
+			return pipelineHandle == null ? null : pipelineHandle.existing();
 		}
 
 		public boolean logical() {
 			return kind == Kind.DEFERRED || kind == Kind.COMPOSITE;
+		}
+	}
+
+	/** Lazily resolves the pipeline after target allocation, without touching RenderSystem during planning. */
+	public static final class PipelineHandle {
+		private final Supplier<RenderPipeline> factory;
+		private RenderPipeline pipeline;
+		private RuntimeException failure;
+
+		public PipelineHandle(Supplier<RenderPipeline> factory) {
+			this.factory = factory;
+		}
+
+		private synchronized RenderPipeline get() {
+			if (pipeline != null) {
+				return pipeline;
+			}
+			if (failure != null) {
+				throw failure;
+			}
+			try {
+				pipeline = factory.get();
+				return pipeline;
+			} catch (RuntimeException exception) {
+				failure = exception;
+				throw exception;
+			}
+		}
+
+		private synchronized RenderPipeline existing() {
+			return pipeline;
+		}
+
+		private synchronized boolean failed() {
+			return failure != null;
 		}
 	}
 }

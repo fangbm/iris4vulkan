@@ -1,5 +1,6 @@
 package net.irisshaders.iris.vulkan;
 
+import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
@@ -24,6 +25,7 @@ import net.minecraft.resources.Identifier;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -704,6 +706,8 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private RenderPipeline createDiagnosticPipeline(String label) {
+		GpuFormat format = IrisVulkanGbufferTargets.effectiveFormat(FINAL_SOURCE_TARGET,
+			IrisVulkanTargetFormat.defaultTargetFormat(FINAL_SOURCE_TARGET, IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET, null));
 		return RenderPipeline.builder()
 			.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 			.withLocation(Identifier.fromNamespaceAndPath("iris", "vulkan/screen/" + label))
@@ -711,7 +715,7 @@ public final class IrisVulkanScreenPassExecutor {
 			.withFragmentShader("core/blit_screen")
 			.withVertexBinding(0, DefaultVertexFormat.POSITION_TEX)
 			.withPrimitiveTopology(PrimitiveTopology.QUADS)
-			.withColorTargetState(0, ColorTargetState.DEFAULT)
+			.withColorTargetState(0, new ColorTargetState(Optional.empty(), format, ColorTargetState.WRITE_ALL))
 			.build();
 	}
 

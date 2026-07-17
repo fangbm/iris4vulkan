@@ -206,7 +206,7 @@ public final class IrisVulkanShaderResources {
 		Identifier fragmentShader = original.getFragmentShader();
 		ShaderDefines shaderDefines = original.getShaderDefines();
 		ColorTargetState[] colorTargetStates = colorTargetCount > 0
-			? createColorTargetStates(colorTargetCount)
+			? adaptColorTargetStates(original.getColorTargetStates(), colorTargetCount)
 			: original.getColorTargetStates().clone();
 		DepthStencilState depthStencilState = original.getDepthStencilState();
 		PolygonMode polygonMode = original.getPolygonMode();
@@ -221,6 +221,15 @@ public final class IrisVulkanShaderResources {
 		ColorTargetState[] colorTargetStates = new ColorTargetState[colorTargetCount];
 
 		Arrays.fill(colorTargetStates, ColorTargetState.DEFAULT);
+		return colorTargetStates;
+	}
+
+	private static ColorTargetState[] adaptColorTargetStates(ColorTargetState[] originalStates, int colorTargetCount) {
+		ColorTargetState[] colorTargetStates = Arrays.copyOf(originalStates, colorTargetCount);
+		if (colorTargetCount > originalStates.length) {
+			Arrays.fill(colorTargetStates, originalStates.length, colorTargetCount, ColorTargetState.DEFAULT);
+		}
+
 		return colorTargetStates;
 	}
 

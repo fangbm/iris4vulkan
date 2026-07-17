@@ -21,9 +21,9 @@ import java.util.Map;
 /** Owns the native Vulkan main/alt target pairs and their shaderpack configuration. */
 public final class IrisVulkanTargetModel implements AutoCloseable {
 	private static final int TARGET_COUNT = IrisVulkanGbufferTargets.COLOR_TARGET_COUNT;
-	private static final GpuFormat SAFE_FALLBACK_FORMAT = GpuFormat.RGBA8_UNORM;
 
 	private final IrisVulkanTargetPair[] targets = new IrisVulkanTargetPair[TARGET_COUNT];
+	private List<IrisVulkanTargetSpec> requestedSpecs = List.of();
 	private List<IrisVulkanTargetSpec> specs = List.of();
 	private Map<String, Map<Integer, Boolean>> explicitFlips = Map.of();
 
@@ -34,7 +34,7 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 
 		List<IrisVulkanTargetSpec> requestedSpecs = buildSpecs(programSet, width, height, sourceFormat);
 		Map<String, Map<Integer, Boolean>> requestedFlips = buildExplicitFlips(programSet.getPackDirectives());
-		if (requestedSpecs.equals(specs) && requestedFlips.equals(explicitFlips) && ready()) {
+		if (requestedSpecs.equals(this.requestedSpecs) && requestedFlips.equals(explicitFlips) && ready()) {
 			return false;
 		}
 
@@ -44,13 +44,13 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 	public boolean configureDefaults(int width, int height, GpuFormat sourceFormat) {
 		List<IrisVulkanTargetSpec> requestedSpecs = new ArrayList<>(TARGET_COUNT);
 		for (int i = 0; i < TARGET_COUNT; i++) {
-			GpuFormat format = i == IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET
-				? IrisVulkanTargetFormat.safeFallback(sourceFormat) : SAFE_FALLBACK_FORMAT;
+			GpuFormat format = IrisVulkanTargetFormat.defaultTargetFormat(i,
+				IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET, sourceFormat);
 			requestedSpecs.add(new IrisVulkanTargetSpec(i, format, width, height, true,
 				IrisVulkanTargetSpec.defaultClearColor(i), i == IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET
 					? IrisVulkanTargetSpec.SeedPolicy.COPY_MAIN_COLOR : IrisVulkanTargetSpec.SeedPolicy.CLEAR));
 		}
-		if (requestedSpecs.equals(specs) && explicitFlips.isEmpty() && ready()) {
+		if (requestedSpecs.equals(this.requestedSpecs) && explicitFlips.isEmpty() && ready()) {
 			return false;
 		}
 
@@ -131,6 +131,14 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 		return targets[index].nextView();
 	}
 
+	/** Returns the allocated format, or the planned format while allocation is unavailable. */
+	public GpuFormat effectiveFormat(int index, GpuFormat plannedFormat) {
+		if (ready() && index >= 0 && index < specs.size()) {
+			return specs.get(index).format();
+		}
+		return plannedFormat;
+	}
+
 	public void swap(int index) {
 		targets[index].swap();
 	}
@@ -170,6 +178,8 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 		PackDirectives directives = programSet.getPackDirectives();
 		PackRenderTargetDirectives renderTargets = directives.getRenderTargetDirectives();
 		List<IrisVulkanTargetSpec> specs = new ArrayList<>(TARGET_COUNT);
+		List<GpuFormat> formats = IrisVulkanTargetFormat.resolveTargetFormats(renderTargets, sourceFormat,
+			TARGET_COUNT, IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET);
 		for (int i = 0; i < TARGET_COUNT; i++) {
 			PackRenderTargetDirectives.RenderTargetSettings settings = renderTargets.getRenderTargetSettings().get(i);
 			if (settings == null) {
@@ -177,10 +187,7 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 				settings = new PackRenderTargetDirectives.RenderTargetSettings();
 			}
 			var dimensions = directives.getTextureScaleOverride(i, width, height);
-			GpuFormat format = IrisVulkanTargetFormat.resolve(settings.getInternalFormat(),
-				i == IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET
-					? IrisVulkanTargetFormat.safeFallback(sourceFormat) : SAFE_FALLBACK_FORMAT, i);
-			specs.add(IrisVulkanTargetSpec.fromSettings(i, settings, format, dimensions.x, dimensions.y));
+			specs.add(IrisVulkanTargetSpec.fromSettings(i, settings, formats.get(i), dimensions.x, dimensions.y));
 		}
 		return List.copyOf(specs);
 	}
@@ -204,6 +211,7 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 
 	private boolean install(List<IrisVulkanTargetSpec> requestedSpecs, Map<String, Map<Integer, Boolean>> requestedFlips) {
 		close();
+		this.requestedSpecs = List.of();
 		specs = List.of();
 		explicitFlips = Map.of();
 
@@ -221,6 +229,7 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 		}
 
 		specs = List.copyOf(effectiveSpecs);
+		this.requestedSpecs = List.copyOf(requestedSpecs);
 		explicitFlips = requestedFlips;
 		return true;
 	}
@@ -229,11 +238,14 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 		try {
 			return new IrisVulkanTargetPair(spec);
 		} catch (RuntimeException exception) {
-			if (spec.format() == SAFE_FALLBACK_FORMAT) {
+			if (spec.format() == IrisVulkanTargetFormat.defaultTargetFormat(spec.index(),
+				IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET, null)) {
 				throw exception;
 			}
-			Iris.logger.warn("Native Vulkan rejected format {} for colortex{}; retrying with {}.", spec.format(), spec.index(), SAFE_FALLBACK_FORMAT, exception);
-			return new IrisVulkanTargetPair(spec.withFormat(SAFE_FALLBACK_FORMAT));
+			GpuFormat fallback = IrisVulkanTargetFormat.defaultTargetFormat(spec.index(),
+				IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET, null);
+			Iris.logger.warn("Native Vulkan rejected format {} for colortex{}; retrying with {}.", spec.format(), spec.index(), fallback, exception);
+			return new IrisVulkanTargetPair(spec.withFormat(fallback));
 		}
 	}
 

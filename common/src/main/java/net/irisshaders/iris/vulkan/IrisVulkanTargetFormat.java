@@ -3,7 +3,10 @@ package net.irisshaders.iris.vulkan;
 import com.mojang.blaze3d.GpuFormat;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.texture.InternalTextureFormat;
+import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /** Maps shaderpack formats to the native GPU format vocabulary. */
@@ -15,6 +18,23 @@ public final class IrisVulkanTargetFormat {
 
 	public static GpuFormat safeFallback(GpuFormat preferred) {
 		return preferred != null && preferred.hasColorAspect() ? preferred : SAFE_FALLBACK_FORMAT;
+	}
+
+	public static GpuFormat defaultTargetFormat(int target, int sourceTarget, GpuFormat sourceFormat) {
+		return target == sourceTarget ? safeFallback(sourceFormat) : SAFE_FALLBACK_FORMAT;
+	}
+
+	/** Resolves the format of every logical target without requiring native target allocation. */
+	public static List<GpuFormat> resolveTargetFormats(PackRenderTargetDirectives directives, GpuFormat sourceFormat,
+														 int targetCount, int sourceTarget) {
+		List<GpuFormat> formats = new ArrayList<>(targetCount);
+		for (int target = 0; target < targetCount; target++) {
+			PackRenderTargetDirectives.RenderTargetSettings settings = directives == null ? null
+				: directives.getRenderTargetSettings().get(target);
+			InternalTextureFormat requested = settings == null ? InternalTextureFormat.RGBA : settings.getInternalFormat();
+			formats.add(resolve(requested, defaultTargetFormat(target, sourceTarget, sourceFormat), target));
+		}
+		return List.copyOf(formats);
 	}
 
 	public static GpuFormat resolve(InternalTextureFormat requested, GpuFormat fallback, int target) {

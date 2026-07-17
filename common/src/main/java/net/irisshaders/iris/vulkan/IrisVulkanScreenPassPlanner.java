@@ -1,5 +1,6 @@
 package net.irisshaders.iris.vulkan;
 
+import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
@@ -22,6 +23,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,15 +38,18 @@ public final class IrisVulkanScreenPassPlanner {
 	}
 
 	public static IrisVulkanScreenPassGraph create(ProgramSet programSet) {
+		List<GpuFormat> targetFormats = IrisVulkanTargetFormat.resolveTargetFormats(
+			programSet.getPackDirectives().getRenderTargetDirectives(), null, COLOR_TARGET_COUNT,
+			IrisVulkanGbufferTargets.FALLBACK_SCENE_TARGET);
 		List<IrisVulkanScreenPassGraph.Node> beginPasses = createPasses(programSet, ProgramArrayId.Begin,
-			TextureStage.BEGIN, "begin", IrisVulkanScreenPassGraph.Kind.BEGIN);
+			TextureStage.BEGIN, "begin", IrisVulkanScreenPassGraph.Kind.BEGIN, targetFormats);
 		List<IrisVulkanScreenPassGraph.Node> preparePasses = createPasses(programSet, ProgramArrayId.Prepare,
-			TextureStage.PREPARE, "prepare", IrisVulkanScreenPassGraph.Kind.PREPARE);
+			TextureStage.PREPARE, "prepare", IrisVulkanScreenPassGraph.Kind.PREPARE, targetFormats);
 		List<IrisVulkanScreenPassGraph.Node> deferredPasses = createPasses(programSet, ProgramArrayId.Deferred,
-			TextureStage.DEFERRED, "deferred", IrisVulkanScreenPassGraph.Kind.DEFERRED);
+			TextureStage.DEFERRED, "deferred", IrisVulkanScreenPassGraph.Kind.DEFERRED, targetFormats);
 		List<IrisVulkanScreenPassGraph.Node> compositePasses = createPasses(programSet, ProgramArrayId.Composite,
-			TextureStage.COMPOSITE_AND_FINAL, "composite", IrisVulkanScreenPassGraph.Kind.COMPOSITE);
-		IrisVulkanScreenPassGraph.Node finalPass = createFinalPass(programSet);
+			TextureStage.COMPOSITE_AND_FINAL, "composite", IrisVulkanScreenPassGraph.Kind.COMPOSITE, targetFormats);
+		IrisVulkanScreenPassGraph.Node finalPass = createFinalPass(programSet, targetFormats);
 		IrisVulkanScreenPassGraph graph = new IrisVulkanScreenPassGraph(beginPasses, preparePasses,
 			deferredPasses, compositePasses, finalPass);
 
@@ -53,8 +58,8 @@ public final class IrisVulkanScreenPassPlanner {
 	}
 
 	private static List<IrisVulkanScreenPassGraph.Node> createPasses(ProgramSet programSet, ProgramArrayId programArrayId,
-																	 TextureStage stage, String namespace,
-																	 IrisVulkanScreenPassGraph.Kind kind) {
+																						 TextureStage stage, String namespace,
+																						 IrisVulkanScreenPassGraph.Kind kind, List<GpuFormat> targetFormats) {
 		List<IrisVulkanScreenPassGraph.Node> passes = new ArrayList<>();
 		ProgramSource[] sources = programSet.getComposite(programArrayId);
 
@@ -70,24 +75,24 @@ public final class IrisVulkanScreenPassPlanner {
 				passes.add(skipped(kind, sanitize(passNamespace + "/" + source.getName()), source.getName(),
 					List.of(), false, source.getDirectives(), "invalid program source or unsupported shader stage"));
 			} else {
-				passes.add(createPass(programSet, source, stage, passNamespace, kind, false));
+				passes.add(createPass(programSet, source, stage, passNamespace, kind, false, targetFormats));
 			}
 		}
 
 		return List.copyOf(passes);
 	}
 
-	private static IrisVulkanScreenPassGraph.Node createFinalPass(ProgramSet programSet) {
+	private static IrisVulkanScreenPassGraph.Node createFinalPass(ProgramSet programSet, List<GpuFormat> targetFormats) {
 		return programSet.get(ProgramId.Final)
 			.map(source -> createPass(programSet, source, TextureStage.COMPOSITE_AND_FINAL,
-				"final", IrisVulkanScreenPassGraph.Kind.FINAL, true))
+				"final", IrisVulkanScreenPassGraph.Kind.FINAL, true, targetFormats))
 			.orElse(null);
 	}
 
 	private static IrisVulkanScreenPassGraph.Node createPass(ProgramSet programSet, ProgramSource source,
-																 TextureStage stage, String namespace,
-																 IrisVulkanScreenPassGraph.Kind kind,
-																 boolean collapseOutputs) {
+																						 TextureStage stage, String namespace,
+																						 IrisVulkanScreenPassGraph.Kind kind,
+																						 boolean collapseOutputs, List<GpuFormat> targetFormats) {
 		String label = sanitize(namespace + "/" + source.getName());
 		String sourceName = source.getName();
 		ProgramDirectives directives = source.getDirectives();
@@ -143,29 +148,19 @@ public final class IrisVulkanScreenPassPlanner {
 			return skipped(kind, label, sourceName, samplers, false, directives, "no color outputs in ProgramDirectives");
 		}
 
-		RenderPipeline pipeline = null;
-		try {
-			pipeline = createPipeline(label, drawBuffers.length, collapseOutputs);
-			IrisNativeVulkan.registerCustomPipelineSource(pipeline, label,
-				transformed.get(PatchShaderType.VERTEX), fragment, collapseOutputs);
+		String vertex = transformed.get(PatchShaderType.VERTEX);
+		IrisVulkanScreenPassGraph.PipelineHandle pipeline = new IrisVulkanScreenPassGraph.PipelineHandle(() ->
+			createPipeline(label, drawBuffers, collapseOutputs, targetFormats, vertex, fragment));
 
-			// Keep the directive metadata attached to the node. The executor owns when these
-			// values take effect, including target flipping, viewport scaling, and mipmaps.
-			return new IrisVulkanScreenPassGraph.Node(kind, label, sourceName, drawBuffers, samplers,
-				directives.getExplicitFlips(), directives.getMipmappedBuffers(), directives.getViewportScale(),
-				collapseOutputs, pipeline, transformed.get(PatchShaderType.VERTEX), fragment,
-				IrisVulkanScreenPassGraph.Status.READY, "");
-		} catch (RuntimeException e) {
-			if (pipeline != null) {
-				IrisNativeVulkan.unregisterCustomPipelineSource(pipeline);
-			}
-
-			return skipped(kind, label, sourceName, samplers, collapseOutputs, directives,
-				failureReason("pipeline construction failed", e));
-		}
+		// Keep the directive metadata attached to the node. The executor owns when these
+		// values take effect, including target flipping, viewport scaling, and mipmaps.
+		return new IrisVulkanScreenPassGraph.Node(kind, label, sourceName, drawBuffers, samplers,
+			directives.getExplicitFlips(), directives.getMipmappedBuffers(), directives.getViewportScale(),
+			collapseOutputs, pipeline, vertex, fragment, IrisVulkanScreenPassGraph.Status.READY, "");
 	}
 
-	private static RenderPipeline createPipeline(String label, int drawBufferCount, boolean collapseOutputs) {
+	private static RenderPipeline createPipeline(String label, int[] drawBuffers, boolean collapseOutputs,
+			List<GpuFormat> plannedTargetFormats, String vertex, String fragment) {
 		RenderPipeline.Builder builder = RenderPipeline.builder()
 			.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 			.withLocation(Identifier.fromNamespaceAndPath("iris", "vulkan/screen/" + label))
@@ -174,12 +169,23 @@ public final class IrisVulkanScreenPassPlanner {
 			.withVertexBinding(0, DefaultVertexFormat.POSITION_TEX)
 			.withPrimitiveTopology(PrimitiveTopology.QUADS);
 
-		int attachmentCount = collapseOutputs ? 1 : drawBufferCount;
-		for (int i = 0; i < attachmentCount; i++) {
-			builder.withColorTargetState(i, ColorTargetState.DEFAULT);
+		int attachmentCount = collapseOutputs ? 1 : drawBuffers.length;
+		for (int attachment = 0; attachment < attachmentCount; attachment++) {
+			int logicalTarget = drawBuffers[attachment];
+			GpuFormat plannedFormat = plannedTargetFormats.get(logicalTarget);
+			GpuFormat format = IrisVulkanGbufferTargets.effectiveFormat(logicalTarget, plannedFormat);
+			builder.withColorTargetState(attachment,
+				new ColorTargetState(Optional.empty(), format, ColorTargetState.WRITE_ALL));
 		}
 
-		return builder.build();
+		RenderPipeline pipeline = builder.build();
+		try {
+			IrisNativeVulkan.registerCustomPipelineSource(pipeline, label, vertex, fragment, collapseOutputs);
+			return pipeline;
+		} catch (RuntimeException exception) {
+			IrisNativeVulkan.unregisterCustomPipelineSource(pipeline);
+			throw exception;
+		}
 	}
 
 	private static IrisVulkanScreenPassGraph.Node skipped(IrisVulkanScreenPassGraph.Kind kind, String label,

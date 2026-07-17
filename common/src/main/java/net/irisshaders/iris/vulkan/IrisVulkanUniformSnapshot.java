@@ -120,6 +120,10 @@ public final class IrisVulkanUniformSnapshot {
 	public static Snapshot capture(Collection<Field> fields) {
 		syncPreviousMatrices();
 		List<Layout> layouts = layouts(fields);
+		CustomUniforms active = activeCustomUniforms;
+		if (active != null) {
+			active.updateFor(layouts.stream().map(layout -> layout.field().name()).toList());
+		}
 		int size = layouts.isEmpty() ? 16 : align(layouts.getLast().offset() + layouts.getLast().size(), 16);
 		ByteBuffer data = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder());
 
@@ -375,8 +379,25 @@ public final class IrisVulkanUniformSnapshot {
 	}
 
 	private static String expectedType(String name) {
-		Optional<CustomUniforms.Snapshot> custom = customUniform(name);
-		return custom.isPresent() ? custom.get().type() : hardcodedExpectedType(name);
+		Optional<String> customType = customType(name);
+		return customType.orElseGet(() -> hardcodedExpectedType(name));
+	}
+
+	private static Optional<String> customType(String name) {
+		CustomUniforms active = activeCustomUniforms;
+		if (active != null) {
+			Optional<String> type = active.typeOf(name);
+			if (type.isPresent()) {
+				return type;
+			}
+		}
+
+		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
+		if (pipeline instanceof IrisRenderingPipeline irisPipeline) {
+			return irisPipeline.getCustomUniforms().typeOf(name);
+		}
+
+		return Optional.empty();
 	}
 
 	private static String hardcodedExpectedType(String name) {

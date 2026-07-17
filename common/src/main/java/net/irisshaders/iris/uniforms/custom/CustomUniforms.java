@@ -27,6 +27,9 @@ import org.joml.Vector3f;
 import org.joml.Vector4f;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,6 +46,7 @@ public class CustomUniforms implements FunctionContext {
 	private final List<CachedUniform> uniformOrder;
 	private final Map<Object, Object2IntMap<CachedUniform>> locationMap = new Object2ObjectOpenHashMap<>();
 	private final Map<CachedUniform, List<CachedUniform>> dependsOn;
+	private final Set<CachedUniform> updatedThisFrame = Collections.newSetFromMap(new IdentityHashMap<>());
 
 	private CustomUniforms(CustomUniformFixedInputUniformsHolder inputHolder, Map<String, Builder.Variable> variables) {
 		this.inputHolder = inputHolder;
@@ -216,6 +220,42 @@ public class CustomUniforms implements FunctionContext {
 		}
 	}
 
+	public void beginFrame() {
+		this.updatedThisFrame.clear();
+	}
+
+	public void updateFor(Collection<String> names) {
+		Set<CachedUniform> required = Collections.newSetFromMap(new IdentityHashMap<>());
+		for (String name : names) {
+			CachedUniform uniform = this.inputHolder.getUniform(name);
+			if (uniform == null) {
+				uniform = this.variables.get(name);
+			}
+			if (uniform != null) {
+				collectDependencies(uniform, required);
+			}
+		}
+
+		for (CachedUniform uniform : this.uniformOrder) {
+			if (required.contains(uniform) && this.updatedThisFrame.add(uniform)) {
+				uniform.update();
+			}
+		}
+	}
+
+	private void collectDependencies(CachedUniform uniform, Set<CachedUniform> required) {
+		if (!required.add(uniform)) {
+			return;
+		}
+
+		List<CachedUniform> dependencies = this.dependsOn.get(uniform);
+		if (dependencies != null) {
+			for (CachedUniform dependency : dependencies) {
+				collectDependencies(dependency, required);
+			}
+		}
+	}
+
 	/**
 	 * Returns a copy of a cached fixed input or pack custom variable without
 	 * evaluating its supplier or pushing it to an OpenGL uniform location.
@@ -229,13 +269,13 @@ public class CustomUniforms implements FunctionContext {
 			return Optional.empty();
 		}
 
-		FunctionReturn value = new FunctionReturn();
-		uniform.writeTo(value);
-		String type = glslType(uniform.getType());
+		String type = typeOf(name).orElse(null);
 		if (type == null) {
 			return Optional.empty();
 		}
 
+		FunctionReturn value = new FunctionReturn();
+		uniform.writeTo(value);
 		return Optional.of(new Snapshot(type, switch (type) {
 			case "bool" -> value.booleanReturn;
 			case "int" -> value.intReturn;
@@ -243,6 +283,18 @@ public class CustomUniforms implements FunctionContext {
 			case "vec2", "vec3", "vec4" -> value.objectReturn;
 			default -> throw new AssertionError("Unhandled custom uniform type: " + type);
 		}));
+	}
+
+	public Optional<String> typeOf(String name) {
+		CachedUniform uniform = this.inputHolder.getUniform(name);
+		if (uniform == null) {
+			uniform = this.variables.get(name);
+		}
+		if (uniform == null) {
+			return Optional.empty();
+		}
+
+		return Optional.ofNullable(glslType(uniform.getType()));
 	}
 
 	public record Snapshot(String type, Object value) {

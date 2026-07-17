@@ -16,7 +16,8 @@ public class IrisMixinPlugin implements IMixinConfigPlugin {
     private static final Splitter OPTION_SPLITTER = Splitter.on(':').limit(2);
 	private static final Set<String> BACKEND_NEUTRAL_MIXINS = Set.of(
 		"net.irisshaders.iris.mixin.GpuDeviceAccessor",
-		"net.irisshaders.iris.mixin.MixinOptions_Entrypoint"
+		"net.irisshaders.iris.mixin.MixinOptions_Entrypoint",
+		"net.irisshaders.iris.mixin.MixinItem"
 	);
 
     public static boolean usingVulkan;

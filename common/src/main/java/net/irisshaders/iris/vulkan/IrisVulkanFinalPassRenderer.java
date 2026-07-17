@@ -51,7 +51,7 @@ public final class IrisVulkanFinalPassRenderer {
 
 	public void render() {
 		frameUpdateNotifier.onNewFrame();
-		customUniforms.update();
+		customUniforms.beginFrame();
 		executor.render();
 	}
 

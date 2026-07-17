@@ -3,8 +3,12 @@ package net.irisshaders.iris.vulkan;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import net.caffeinemc.mods.sodium.client.util.FogParameters;
 import net.caffeinemc.mods.sodium.client.util.FogStorage;
+import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
+import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
+import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.attribute.EnvironmentAttributes;
@@ -138,7 +142,8 @@ public final class IrisVulkanUniformSnapshot {
 
 		switch (field.type()) {
 			case "float" -> target.putFloat(((Number) value).floatValue());
-			case "int", "uint", "bool" -> target.putInt(((Number) value).intValue());
+			case "int", "uint" -> target.putInt(((Number) value).intValue());
+			case "bool" -> target.putInt((Boolean) value ? 1 : 0);
 			case "vec2" -> put(target, (Vector2f) value);
 			case "ivec2" -> put(target, (Vector2i) value);
 			case "vec3" -> put(target, (Vector3f) value);
@@ -152,6 +157,11 @@ public final class IrisVulkanUniformSnapshot {
 	}
 
 	private static Object value(String name, String type) {
+		Optional<CustomUniforms.Snapshot> custom = customUniform(name);
+		if (custom.isPresent() && custom.get().type().equals(type)) {
+			return custom.get().value();
+		}
+
 		Minecraft client = client();
 
 		return switch (name) {
@@ -336,7 +346,20 @@ public final class IrisVulkanUniformSnapshot {
 		return new Vector3f((float) position.x, (float) position.y, (float) position.z);
 	}
 
+	private static Optional<CustomUniforms.Snapshot> customUniform(String name) {
+		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
+		if (pipeline instanceof IrisRenderingPipeline irisPipeline) {
+			return irisPipeline.getCustomUniforms().lookup(name);
+		}
+		return Optional.empty();
+	}
+
 	private static String expectedType(String name) {
+		Optional<CustomUniforms.Snapshot> custom = customUniform(name);
+		return custom.isPresent() ? custom.get().type() : hardcodedExpectedType(name);
+	}
+
+	private static String hardcodedExpectedType(String name) {
 		return switch (name) {
 			case "gbufferModelView", "gbufferProjection", "gbufferModelViewInverse", "gbufferProjectionInverse",
 				"gbufferPreviousModelView", "gbufferPreviousProjection", "shadowModelView", "shadowProjection",

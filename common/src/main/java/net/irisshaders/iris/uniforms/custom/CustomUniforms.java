@@ -22,10 +22,14 @@ import net.irisshaders.iris.parsing.IrisFunctions;
 import net.irisshaders.iris.parsing.IrisOptions;
 import net.irisshaders.iris.parsing.VectorType;
 import net.irisshaders.iris.uniforms.custom.cached.CachedUniform;
+import org.joml.Vector2f;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -210,6 +214,60 @@ public class CustomUniforms implements FunctionContext {
 		for (CachedUniform value : this.uniformOrder) {
 			value.update();
 		}
+	}
+
+	/**
+	 * Returns a copy of a cached fixed input or pack custom variable without
+	 * evaluating its supplier or pushing it to an OpenGL uniform location.
+	 */
+	public Optional<Snapshot> lookup(String name) {
+		CachedUniform uniform = this.inputHolder.getUniform(name);
+		if (uniform == null) {
+			uniform = this.variables.get(name);
+		}
+		if (uniform == null) {
+			return Optional.empty();
+		}
+
+		FunctionReturn value = new FunctionReturn();
+		uniform.writeTo(value);
+		String type = glslType(uniform.getType());
+		if (type == null) {
+			return Optional.empty();
+		}
+
+		return Optional.of(new Snapshot(type, switch (type) {
+			case "bool" -> value.booleanReturn;
+			case "int" -> value.intReturn;
+			case "float" -> value.floatReturn;
+			case "vec2", "vec3", "vec4" -> value.objectReturn;
+			default -> throw new AssertionError("Unhandled custom uniform type: " + type);
+		}));
+	}
+
+	public record Snapshot(String type, Object value) {
+		public Snapshot {
+			value = copyValue(value);
+		}
+
+		private static Object copyValue(Object value) {
+			return switch (value) {
+				case Vector2f vector -> new Vector2f(vector);
+				case Vector3f vector -> new Vector3f(vector);
+				case Vector4f vector -> new Vector4f(vector);
+				default -> value;
+			};
+		}
+	}
+
+	private static String glslType(Type type) {
+		if (type == Type.Boolean) return "bool";
+		if (type == Type.Int) return "int";
+		if (type == Type.Float) return "float";
+		if (type == VectorType.VEC2) return "vec2";
+		if (type == VectorType.VEC3) return "vec3";
+		if (type == VectorType.VEC4) return "vec4";
+		return null;
 	}
 
 	public void push(Object pass) {

@@ -666,7 +666,7 @@ public final class IrisNativeVulkan {
 		CacheKey cacheKey = new CacheKey(device, renderPipeline, source);
 
 		if (failedPipelines.contains(cacheKey)) {
-			return Optional.empty();
+			throw customPipelineFailure(renderPipeline, source, "was previously marked as failed", null);
 		}
 
 		VulkanRenderPipeline cached = compiledPipelines.get(cacheKey);
@@ -674,26 +674,39 @@ public final class IrisNativeVulkan {
 			return Optional.of(cached);
 		}
 
+		VulkanRenderPipeline compiled;
 		try {
-			VulkanRenderPipeline compiled = compileCustomVulkanPipeline(device, renderPipeline, source);
-
-			if (!compiled.isValid()) {
-				failedPipelines.add(cacheKey);
-				Iris.logger.warn("Vulkan custom pass {} compiled to an invalid pipeline; falling back to vanilla.",
-					source.name());
-				return Optional.empty();
-			}
-
-			compiledPipelines.put(cacheKey, compiled);
-			Iris.logger.info("Compiled Vulkan custom pass {} for pipeline {}.",
-				source.name(), renderPipeline.getLocation());
-			return Optional.of(compiled);
+			compiled = compileCustomVulkanPipeline(device, renderPipeline, source);
 		} catch (ShaderCompileException | RuntimeException e) {
 			failedPipelines.add(cacheKey);
-			Iris.logger.warn("Failed to compile Vulkan custom pass {}: {}", source.name(), e.getMessage());
+			RuntimeException failure = customPipelineFailure(renderPipeline, source, "failed to compile: " + failureReason(e), e);
+			Iris.logger.warn(failure.getMessage());
 			logDeviceDebugMessages(device, renderPipeline);
-			return Optional.empty();
+			throw failure;
 		}
+
+		if (!compiled.isValid()) {
+			failedPipelines.add(cacheKey);
+			RuntimeException failure = customPipelineFailure(renderPipeline, source, "compiled to an invalid pipeline", null);
+			Iris.logger.warn(failure.getMessage());
+			throw failure;
+		}
+
+		compiledPipelines.put(cacheKey, compiled);
+		Iris.logger.info("Compiled Vulkan custom pass {} for pipeline {}.",
+			source.name(), renderPipeline.getLocation());
+		return Optional.of(compiled);
+	}
+
+	private static RuntimeException customPipelineFailure(RenderPipeline renderPipeline, CustomPipelineSource source,
+																 String reason, Throwable cause) {
+		String message = "Vulkan custom pass " + source.name() + " for pipeline " + renderPipeline.getLocation() + " " + reason;
+		return cause == null ? new RuntimeException(message) : new RuntimeException(message, cause);
+	}
+
+	private static String failureReason(Throwable throwable) {
+		String message = throwable.getMessage();
+		return message == null || message.isBlank() ? throwable.getClass().getSimpleName() : message;
 	}
 
 	private static Optional<VulkanRenderPipeline> compileOverride(VulkanDevice device, RenderPipeline renderPipeline,

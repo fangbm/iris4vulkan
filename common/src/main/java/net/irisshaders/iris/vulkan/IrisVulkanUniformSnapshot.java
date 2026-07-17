@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -42,9 +43,20 @@ public final class IrisVulkanUniformSnapshot {
 	public static final String BLOCK_NAME = "IrisUniforms";
 	private static final Map<String, Matrix4f> CURRENT_MATRICES = new LinkedHashMap<>();
 	private static final Map<String, Matrix4f> PREVIOUS_MATRICES = new LinkedHashMap<>();
+	private static volatile CustomUniforms activeCustomUniforms;
 	private static int previousFrame = Integer.MIN_VALUE;
 
 	private IrisVulkanUniformSnapshot() {
+	}
+
+	public static synchronized void registerActiveCustomUniforms(CustomUniforms customUniforms) {
+		activeCustomUniforms = Objects.requireNonNull(customUniforms, "customUniforms");
+	}
+
+	public static synchronized void unregisterActiveCustomUniforms(CustomUniforms customUniforms) {
+		if (activeCustomUniforms == customUniforms) {
+			activeCustomUniforms = null;
+		}
 	}
 
 	public record Field(String name, String type) {
@@ -347,6 +359,14 @@ public final class IrisVulkanUniformSnapshot {
 	}
 
 	private static Optional<CustomUniforms.Snapshot> customUniform(String name) {
+		CustomUniforms active = activeCustomUniforms;
+		if (active != null) {
+			Optional<CustomUniforms.Snapshot> snapshot = active.lookup(name);
+			if (snapshot.isPresent()) {
+				return snapshot;
+			}
+		}
+
 		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
 		if (pipeline instanceof IrisRenderingPipeline irisPipeline) {
 			return irisPipeline.getCustomUniforms().lookup(name);

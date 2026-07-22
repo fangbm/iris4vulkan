@@ -45,12 +45,12 @@ public final class IrisVulkanScreenPassExecutor {
 	private static final String COPY_VERTEX_FINAL_TEXTURE_FRAGMENT_LABEL = "diagnostic/copy_vertex_final_texture_fragment";
 	private static final Pattern FRAGMENT_INPUT = Pattern.compile("(?m)^\\s*((?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*)in\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\[[^]]+])?\\s*;");
 	private static final String DIAGNOSTIC_COPY_VERTEX = """
-		#version 150
+		#version 450 core
 
-		in vec3 Position;
-		in vec2 UV0;
+		layout(location = 0) in vec3 Position;
+		layout(location = 1) in vec2 UV0;
 
-		out vec2 iris_texCoord;
+		layout(location = 0) out vec2 iris_texCoord;
 
 		void main() {
 			iris_texCoord = UV0;
@@ -103,6 +103,7 @@ public final class IrisVulkanScreenPassExecutor {
 	private boolean loggedCopyVertexFinalTexelFetchFragmentFrame;
 	private boolean loggedCopyVertexFinalTexelFetchRawFragmentFrame;
 	private boolean loggedCopyVertexFinalTextureFragmentFrame;
+	private boolean finalInputStagingFailed;
 	private boolean loggedFallbackFinalSourceFrame;
 	private boolean loggedDirectCopy;
 	private boolean loggedStagedFinalInput;
@@ -589,6 +590,10 @@ public final class IrisVulkanScreenPassExecutor {
 
 	private GpuTextureView stageFinalInput(CommandEncoder encoder, GpuTextureView depthView,
 											 GpuTextureView sourceView, GpuBuffer indices, IndexType indexType) {
+		if (finalInputStagingFailed) {
+			return null;
+		}
+
 		if (sourceView == null || sourceView.isClosed()) {
 			Iris.logger.warn("Cannot stage native Vulkan final input because the scene source view is unavailable.");
 			return null;
@@ -607,6 +612,7 @@ public final class IrisVulkanScreenPassExecutor {
 
 			return stagedView;
 		} catch (RuntimeException exception) {
+			finalInputStagingFailed = true;
 			Iris.logger.warn("Skipping native Vulkan final input staging after an error: {}", exception.getMessage());
 			return null;
 		}
@@ -781,7 +787,7 @@ public final class IrisVulkanScreenPassExecutor {
 		if (diagnosticCopyPipeline == null) {
 			diagnosticCopyPipeline = createDiagnosticPipeline(DIAGNOSTIC_COPY_LABEL);
 			IrisNativeVulkan.registerCustomPipelineSource(diagnosticCopyPipeline, DIAGNOSTIC_COPY_LABEL,
-				DIAGNOSTIC_COPY_VERTEX, "#version 150\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY, true);
+				DIAGNOSTIC_COPY_VERTEX, "#version 450 core\n" + DIAGNOSTIC_COPY_FRAGMENT_BODY, true);
 		}
 
 		return diagnosticCopyPipeline;

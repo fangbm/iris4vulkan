@@ -3,9 +3,7 @@ package net.irisshaders.iris.vulkan;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.pipeline.transform.PatchShaderType;
@@ -161,8 +159,9 @@ public final class IrisVulkanScreenPassPlanner {
 
 	private static RenderPipeline createPipeline(String label, int[] drawBuffers, boolean collapseOutputs,
 			List<GpuFormat> plannedTargetFormats, String vertex, String fragment) {
+		// These passes never attach depth. Leaving the state unset makes Minecraft's
+		// Vulkan compiler create the withoutDepthPipeline variant used by RenderPass.
 		RenderPipeline.Builder builder = RenderPipeline.builder()
-			.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 			.withLocation(Identifier.fromNamespaceAndPath("iris", "vulkan/screen/" + label))
 			.withVertexShader("core/screenquad")
 			.withFragmentShader("core/blit_screen")

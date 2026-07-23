@@ -5,9 +5,7 @@ import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPass.RenderArea;
@@ -800,8 +798,9 @@ public final class IrisVulkanScreenPassExecutor {
 	}
 
 	private RenderPipeline createDiagnosticPipeline(String label, GpuFormat format) {
+		// Diagnostic copies use a color-only render pass, so the pipeline must expose
+		// Minecraft's withoutDepthPipeline variant.
 		return RenderPipeline.builder()
-			.withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
 			.withLocation(Identifier.fromNamespaceAndPath("iris", "vulkan/screen/" + label))
 			.withVertexShader("core/screenquad")
 			.withFragmentShader("core/blit_screen")

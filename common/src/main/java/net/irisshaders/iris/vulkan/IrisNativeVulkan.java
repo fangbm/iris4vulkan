@@ -685,9 +685,20 @@ public final class IrisNativeVulkan {
 			throw failure;
 		}
 
-		if (!compiled.isValid()) {
+		long withDepthPipeline = compiled.withDepthPipeline();
+		long withoutDepthPipeline = compiled.withoutDepthPipeline();
+		long pipelineLayout = compiled.pipelineLayout();
+		boolean pipelineValid = compiled.isValid();
+		Iris.logger.info("Vulkan custom pass {} native handles: withDepth={}, withoutDepth={}, layout={}.",
+			source.name(), nativeHandle(withDepthPipeline), nativeHandle(withoutDepthPipeline), nativeHandle(pipelineLayout));
+
+		if (!pipelineValid || withoutDepthPipeline == 0L) {
+			compiled.destroy();
 			failedPipelines.add(cacheKey);
-			RuntimeException failure = customPipelineFailure(renderPipeline, source, "compiled to an invalid pipeline", null);
+			String reason = !pipelineValid
+				? "compiled to an invalid pipeline"
+				: "did not create the no-depth pipeline required by screen passes";
+			RuntimeException failure = customPipelineFailure(renderPipeline, source, reason, null);
 			Iris.logger.warn(failure.getMessage());
 			throw failure;
 		}
@@ -696,6 +707,10 @@ public final class IrisNativeVulkan {
 		Iris.logger.info("Compiled Vulkan custom pass {} for pipeline {}.",
 			source.name(), renderPipeline.getLocation());
 		return Optional.of(compiled);
+	}
+
+	private static String nativeHandle(long handle) {
+		return "0x" + Long.toUnsignedString(handle, 16);
 	}
 
 	private static RuntimeException customPipelineFailure(RenderPipeline renderPipeline, CustomPipelineSource source,

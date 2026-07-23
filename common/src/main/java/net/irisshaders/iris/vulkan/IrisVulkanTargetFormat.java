@@ -96,12 +96,31 @@ public final class IrisVulkanTargetFormat {
 		};
 
 		if (resolved != null && resolved.hasColorAspect()) {
-			return resolved;
+			return renderAttachmentSafe(resolved);
 		}
 
 		String requestedName = requested == null ? "<missing>" : requested.name();
 		Iris.logger.warn("Native Vulkan does not support shaderpack format {} for colortex{}; using {}.",
 			requestedName.toLowerCase(Locale.ROOT), target, safeFallback);
 		return safeFallback;
+	}
+
+	/** Vulkan drivers do not consistently expose three-component formats as color attachments. */
+	private static GpuFormat renderAttachmentSafe(GpuFormat format) {
+		return switch (format) {
+			case RGB8_UNORM -> GpuFormat.RGBA8_UNORM;
+			case RGB8_SNORM -> GpuFormat.RGBA8_SNORM;
+			case RGB16_UNORM -> GpuFormat.RGBA16_UNORM;
+			case RGB16_SNORM -> GpuFormat.RGBA16_SNORM;
+			case RGB8_UINT -> GpuFormat.RGBA8_UINT;
+			case RGB8_SINT -> GpuFormat.RGBA8_SINT;
+			case RGB16_UINT -> GpuFormat.RGBA16_UINT;
+			case RGB16_SINT -> GpuFormat.RGBA16_SINT;
+			case RGB32_UINT -> GpuFormat.RGBA32_UINT;
+			case RGB32_SINT -> GpuFormat.RGBA32_SINT;
+			case RGB16_FLOAT -> GpuFormat.RGBA16_FLOAT;
+			case RGB32_FLOAT -> GpuFormat.RGBA32_FLOAT;
+			default -> format;
+		};
 	}
 }

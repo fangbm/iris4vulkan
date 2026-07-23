@@ -218,6 +218,8 @@ public final class IrisVulkanTargetModel implements AutoCloseable {
 		List<IrisVulkanTargetSpec> effectiveSpecs = new ArrayList<>(requestedSpecs);
 		try {
 			for (IrisVulkanTargetSpec requestedSpec : requestedSpecs) {
+				Iris.logger.info("Allocating native Vulkan colortex{} pair: format={}, size={}x{}.",
+					requestedSpec.index(), requestedSpec.format(), requestedSpec.width(), requestedSpec.height());
 				IrisVulkanTargetPair pair = createPair(requestedSpec);
 				targets[requestedSpec.index()] = pair;
 				effectiveSpecs.set(requestedSpec.index(), pair.spec());

@@ -20,8 +20,10 @@ import org.joml.Vector4fc;
 
 import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 public final class IrisVulkanGbufferTargets {
 	public static final int COLOR_TARGET_COUNT = 8;
@@ -35,6 +37,7 @@ public final class IrisVulkanGbufferTargets {
 	private static boolean currentFrameMainColorCopyAvailable;
 	private static int[] activeDrawBuffers = DEFAULT_TERRAIN_DRAW_BUFFERS;
 	private static boolean loggedCapture;
+	private static final Set<String> loggedCaptureRejections = new HashSet<>();
 	private static GpuTextureView depthTexture0;
 	private static GpuTextureView depthTexture1;
 	private static GpuTextureView depthTexture2;
@@ -50,48 +53,60 @@ public final class IrisVulkanGbufferTargets {
 		frameOpen = true;
 		frameActive = false;
 		currentFrameMainColorCopyAvailable = false;
-		loggedCapture = false;
 		activeDrawBuffers = Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length);
 	}
 
 	public static boolean rewriteMainRenderPass(CommandEncoder encoder, RenderPassDescriptor descriptor) {
-		if (!IrisBackend.isVulkan(RenderSystem.getDevice()) || !shouldCaptureCurrentPhase()) {
-			return false;
+		if (!IrisBackend.isVulkan(RenderSystem.getDevice())) {
+			return rejectCapture("render backend is not Vulkan");
+		}
+		if (!frameOpen) {
+			return rejectCapture("frame capture is not open");
+		}
+		if (Iris.getCurrentPack().isEmpty()) {
+			return rejectCapture("no shaderpack is active");
 		}
 
 		String label = descriptor.label().get();
 		if (label == null) {
 			label = "";
 		}
+		WorldRenderingPhase phase = currentTerrainCapturePhase();
+		boolean sodiumTerrainPass = label.equalsIgnoreCase("Terrain");
+		if (phase == WorldRenderingPhase.NONE && !sodiumTerrainPass) {
+			return rejectCapture("current Iris phase is not opaque terrain: " + label);
+		}
 		if (shouldSkipCaptureLabel(label)) {
-			return false;
+			return rejectCapture("render-pass label is excluded: " + label);
 		}
 
 		if (descriptor.depthAttachment() == null || descriptor.colorAttachments().size() != 1) {
-			return false;
+			return rejectCapture("render pass does not have one color attachment plus depth");
 		}
 
 		RenderPassDescriptor.Attachment<Optional<Vector4fc>> first = descriptor.colorAttachments().getFirst();
 
 		if (first == null) {
-			return false;
+			return rejectCapture("render pass has a null color attachment");
 		}
 
 		if (first.textureView() == null) {
-			return false;
+			return rejectCapture("render pass has a null color texture view");
 		}
 
 		GpuTexture colorTexture = first.textureView().texture();
 		GpuTexture mainColorTexture = Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTexture();
 
 		if (!isMainSizedColorTarget(colorTexture, mainColorTexture)) {
-			return false;
+			return rejectCapture("color attachment is not the copyable main-sized target");
 		}
 
-		int[] drawBuffers = IrisNativeVulkan.getDrawBuffersForCurrentPhase();
+		int[] drawBuffers = phase == WorldRenderingPhase.NONE
+			? Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length)
+			: IrisNativeVulkan.getDrawBuffersForPhase(phase);
 
 		if (drawBuffers.length == 0) {
-			drawBuffers = DEFAULT_TERRAIN_DRAW_BUFFERS;
+			return rejectCapture("shaderpack terrain program has no draw buffers");
 		}
 		if (!validDrawBuffers(drawBuffers)) {
 			Iris.logger.warn("Ignoring invalid native Vulkan draw-buffer selection {}; using the safe terrain defaults.",
@@ -102,13 +117,14 @@ public final class IrisVulkanGbufferTargets {
 		if (ensure(colorTexture)) {
 			frameActive = false;
 			currentFrameMainColorCopyAvailable = false;
+			loggedCapture = false;
 		}
 		if (!ready()) {
-			return false;
+			return rejectCapture("gbuffer targets are not ready");
 		}
 
 		if (!frameActive) {
-			currentFrameMainColorCopyAvailable = seedTargets(encoder, colorTexture);
+			currentFrameMainColorCopyAvailable = seedTargets(encoder, first.textureView());
 			frameActive = true;
 		}
 
@@ -176,10 +192,12 @@ public final class IrisVulkanGbufferTargets {
 		if (ensure(colorTexture)) {
 			frameActive = false;
 			currentFrameMainColorCopyAvailable = false;
+			loggedCapture = false;
 		}
 
 		if (!frameActive && ready()) {
-			currentFrameMainColorCopyAvailable = seedTargets(encoder, colorTexture);
+			currentFrameMainColorCopyAvailable = seedTargets(encoder,
+				Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTextureView());
 			frameActive = true;
 		}
 	}
@@ -210,6 +228,10 @@ public final class IrisVulkanGbufferTargets {
 
 	public static void swap(int index) {
 		targetModel.swap(index);
+	}
+
+	public static void generateMipmaps(CommandEncoder encoder, int index) {
+		targetModel.generateMipmaps(encoder, index);
 	}
 
 	public static void selectMain(int index) {
@@ -295,30 +317,39 @@ public final class IrisVulkanGbufferTargets {
 	}
 
 	public static GpuTextureView colorSamplerView(String sampler) {
-		if (!ready() || sampler == null) {
-			return null;
+		int target = colorSamplerTarget(sampler);
+		return ready() && target >= 0 ? currentView(target) : null;
+	}
+
+	public static int colorSamplerTarget(String sampler) {
+		if (sampler == null) {
+			return -1;
 		}
 
 		if (sampler.startsWith("colortex")) {
 			try {
 				int index = Integer.parseInt(sampler.substring("colortex".length()));
-
-				if (index >= 0 && index < COLOR_TARGET_COUNT) {
-					return currentView(index);
-				}
+				return index >= 0 && index < COLOR_TARGET_COUNT ? index : -1;
 			} catch (NumberFormatException ignored) {
-				return null;
+				return -1;
 			}
 		}
 
 		return switch (sampler) {
-			case "gcolor" -> currentView(0);
-			case "gdepth", "gaux1" -> currentView(1);
-			case "gnormal", "gaux3" -> currentView(3);
-			case "gaux2" -> currentView(2);
-			case "gaux4", "composite", "InSampler", "Sampler0", "u_MainSampler", "texture", "tex" -> currentView(FALLBACK_SCENE_TARGET);
-			default -> null;
+			case "gcolor" -> 0;
+			case "gdepth", "gaux1" -> 1;
+			case "gnormal", "gaux3" -> 3;
+			case "gaux2" -> 2;
+			case "gaux4", "composite", "InSampler", "Sampler0", "u_MainSampler", "texture", "tex" -> FALLBACK_SCENE_TARGET;
+			default -> -1;
 		};
+	}
+
+	public static boolean isCurrentColorAttachment(int target, GpuTextureView view) {
+		if (!ready() || target < 0 || target >= COLOR_TARGET_COUNT || view == null) {
+			return false;
+		}
+		return currentView(target) == view;
 	}
 
 	public static void finishFrame() {
@@ -334,25 +365,27 @@ public final class IrisVulkanGbufferTargets {
 		frameActive = false;
 		currentFrameMainColorCopyAvailable = false;
 		activeDrawBuffers = Arrays.copyOf(DEFAULT_TERRAIN_DRAW_BUFFERS, DEFAULT_TERRAIN_DRAW_BUFFERS.length);
+		loggedCapture = false;
+		loggedCaptureRejections.clear();
 		clearDepthTextureViews();
 	}
 
-	private static boolean shouldCaptureCurrentPhase() {
-		if (!frameOpen || Iris.getCurrentPack().isEmpty()) {
-			return false;
-		}
-
+	private static WorldRenderingPhase currentTerrainCapturePhase() {
 		WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
 		WorldRenderingPhase phase = pipeline == null ? WorldRenderingPhase.NONE : pipeline.getPhase();
 
-		if (phase == WorldRenderingPhase.TERRAIN_TRANSLUCENT) {
-			return false;
-		}
-
-		return phase == WorldRenderingPhase.NONE
-			|| phase == WorldRenderingPhase.TERRAIN_SOLID
+		return phase == WorldRenderingPhase.TERRAIN_SOLID
 			|| phase == WorldRenderingPhase.TERRAIN_CUTOUT
-			|| phase == WorldRenderingPhase.TERRAIN_CUTOUT_MIPPED;
+			|| phase == WorldRenderingPhase.TERRAIN_CUTOUT_MIPPED
+			? phase
+			: WorldRenderingPhase.NONE;
+	}
+
+	private static boolean rejectCapture(String reason) {
+		if (Boolean.getBoolean("iris.vulkan.logGbufferCaptureRejects") && loggedCaptureRejections.add(reason)) {
+			Iris.logger.info("Native Vulkan gbuffer capture rejected once: {}.", reason);
+		}
+		return false;
 	}
 
 	private static boolean isMainSizedColorTarget(GpuTexture candidate, GpuTexture mainColorTexture) {
@@ -419,8 +452,8 @@ public final class IrisVulkanGbufferTargets {
 		return true;
 	}
 
-	private static boolean seedTargets(CommandEncoder encoder, GpuTexture colorTexture) {
-		return targetModel.seed(encoder, colorTexture);
+	private static boolean seedTargets(CommandEncoder encoder, GpuTextureView colorTextureView) {
+		return targetModel.seed(encoder, colorTextureView);
 	}
 
 	private static void bindAlias(RenderPass pass, String name, int target, GpuSampler sampler) {

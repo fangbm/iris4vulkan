@@ -41,7 +41,8 @@ public final class IrisVulkanShaderResources {
 	private static final Pattern STORAGE_BLOCK = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:coherent|volatile|restrict|readonly|writeonly)\\s+)*buffer\\s+([A-Za-z_][A-Za-z0-9_]*)\\b");
 	private static final Pattern BLOCK_ARRAY = Pattern.compile("(?s)\\b(?:uniform|buffer)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{.*?\\}\\s*[A-Za-z_][A-Za-z0-9_]*\\s*(?:\\[[^]]+])+");
 	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp)\\s+)*([iu]?sampler\\w+)\\s+(\\w+)\\s*((?:\\s*\\[[^]]+])+)?\\s*;");
-	private static final Pattern LOOSE_NON_OPAQUE_UNIFORM = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp|coherent|volatile|restrict|readonly|writeonly)\\s+)*([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*\\[[^;=]+])?\\s*(?:=\\s*[^;]+)?;\\s*\\R?");
+	private static final Pattern LOOSE_NON_OPAQUE_UNIFORM = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:lowp|mediump|highp|coherent|volatile|restrict|readonly|writeonly)\\s+)*([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*[^;]*);\\s*\\R?");
+	private static final Pattern UNIFORM_DECLARATOR = Pattern.compile("^\\s*([A-Za-z_][A-Za-z0-9_]*)(\\s*(?:\\[[^]]+]\\s*)*)$");
 	private static final Pattern VERTEX_INPUT = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*(?:in|attribute)\\s+(?:(?:lowp|mediump|highp)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*\\[[^;=]+])?\\s*;\\s*\\R?");
 	private static final Pattern FRAGMENT_OUTPUT = Pattern.compile("(?m)^\\s*layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)\\s*out\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;\\s*\\R?");
 	private static final Pattern PLAIN_FRAGMENT_OUTPUT = Pattern.compile("(?m)^(\\s*)((?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*)out\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;\\s*\\R?");
@@ -52,6 +53,9 @@ public final class IrisVulkanShaderResources {
 	private static final Pattern SODIUM_REGION_OFFSET_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+vec3\\s+u_RegionOffset\\s*;\\s*\\R?");
 	private static final Pattern SODIUM_CURRENT_TIME_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+int\\s+u_CurrentTime\\s*;\\s*\\R?");
 	private static final Pattern SODIUM_REGION_ID_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+uint\\s+u_RegionID\\s*;\\s*\\R?");
+	private static final Pattern SODIUM_SECTION_TIME_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+isamplerBuffer\\s+u_SectionTimeInfo\\s*;\\s*\\R?");
+	private static final Pattern SODIUM_CHUNK_FADE_FETCH = Pattern.compile("(?m)^(\\s*)int\\s+chunkFade\\s*=\\s*texelFetch\\s*\\(\\s*u_SectionTimeInfo\\s*,.*\\)\\s*\\.r\\s*;\\s*$");
+	private static final Pattern FLOAT_TEXTURE_SIZE_INITIALIZER = Pattern.compile("(?m)^(\\s*)(vec[234])\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*textureSize\\s*\\(([^;]+)\\)\\s*;");
 	private static final Map<RenderPipeline, ResourceSet> RESOURCE_SETS =
 		java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
@@ -64,9 +68,29 @@ public final class IrisVulkanShaderResources {
 	}
 
 	public static Prepared prepareGbufferPass(RenderPipeline original, ShaderKey shaderKey, String vertex, String fragment,
-											  int colorTargetCount) {
-		return prepareInternal(original, shaderKey, chooseVertexFormats(original, shaderKey), vertex, fragment,
+												  int colorTargetCount) {
+		String effectiveFragment = Boolean.getBoolean("iris.vulkan.debugConstantGbufferFragment")
+			? constantGbufferFragment(colorTargetCount)
+			: fragment;
+		return prepareInternal(original, shaderKey, chooseVertexFormats(original, shaderKey), vertex, effectiveFragment,
 			false, colorTargetCount);
+	}
+
+	private static String constantGbufferFragment(int colorTargetCount) {
+		StringBuilder source = new StringBuilder("#version 450 core\n");
+		for (int i = 0; i < colorTargetCount; i++) {
+			source.append("layout(location = ").append(i).append(") out vec4 iris_DebugColor")
+				.append(i).append(";\n");
+		}
+		source.append("void main() {\n");
+		for (int i = 0; i < colorTargetCount; i++) {
+			float red = i == 0 ? 1.0f : 0.0f;
+			float green = i == 1 ? 1.0f : 0.0f;
+			float blue = i == 2 ? 1.0f : 0.0f;
+			source.append("iris_DebugColor").append(i).append(" = vec4(")
+				.append(red).append(", ").append(green).append(", ").append(blue).append(", 1.0);\n");
+		}
+		return source.append("}\n").toString();
 	}
 
 	public static Prepared prepareScreenPass(RenderPipeline original, String vertex, String fragment) {
@@ -83,6 +107,8 @@ public final class IrisVulkanShaderResources {
 											int colorTargetCount) {
 		String patchedVertex = patchSodiumNativeVulkanUniforms(vertex, shaderKey);
 		String patchedFragment = patchSodiumNativeVulkanUniforms(fragment, shaderKey);
+		patchedVertex = patchStrictVulkanConversions(patchedVertex);
+		patchedFragment = patchStrictVulkanConversions(patchedFragment);
 		UniformPatch vertexUniforms = patchLooseUniforms(patchedVertex);
 		UniformPatch fragmentUniforms = patchLooseUniforms(patchedFragment);
 		LinkedHashMap<String, IrisVulkanUniformSnapshot.Field> fieldsByName = new LinkedHashMap<>();
@@ -131,6 +157,14 @@ public final class IrisVulkanShaderResources {
 		boolean hasRegionOffset = SODIUM_REGION_OFFSET_UNIFORM.matcher(source).find();
 		boolean hasCurrentTime = SODIUM_CURRENT_TIME_UNIFORM.matcher(source).find();
 		boolean hasRegionId = SODIUM_REGION_ID_UNIFORM.matcher(source).find();
+		boolean hasSectionTimeInfo = SODIUM_SECTION_TIME_UNIFORM.matcher(source).find();
+
+		if (hasSectionTimeInfo) {
+			// Sodium's section-time texel buffer is not exposed through its render-pass API.
+			// A negative timestamp selects the shader's existing fully-visible fallback.
+			source = SODIUM_SECTION_TIME_UNIFORM.matcher(source).replaceAll("");
+			source = SODIUM_CHUNK_FADE_FETCH.matcher(source).replaceAll("$1int chunkFade = -1;");
+		}
 
 		if (hasRegionOffset || hasCurrentTime || hasRegionId) {
 			source = SODIUM_REGION_OFFSET_UNIFORM.matcher(source).replaceAll("");
@@ -147,6 +181,11 @@ public final class IrisVulkanShaderResources {
 		}
 
 		return source;
+	}
+
+	private static String patchStrictVulkanConversions(String source) {
+		return FLOAT_TEXTURE_SIZE_INITIALIZER.matcher(source)
+			.replaceAll("$1$2 $3 = $2(textureSize($4));");
 	}
 
 	private static RenderPipeline extendPipeline(RenderPipeline original, ResourceSet resources, VertexFormat[] vertexFormats,
@@ -348,25 +387,35 @@ public final class IrisVulkanShaderResources {
 
 		while (matcher.find()) {
 			String type = matcher.group(1);
-			String name = matcher.group(2);
-			String arraySuffix = matcher.group(3);
+			List<UniformDeclarator> declarators = parseUniformDeclarators(matcher.group(2));
 
 			if (isOpaqueUniformType(type)) {
 				if (isUnsupportedOpaqueType(type)) {
-					unsupported.add(new UnsupportedResource("uniform", name, type,
-						"image and subpass resources have no Iris Vulkan binding"));
+					for (UniformDeclarator declarator : declarators) {
+						unsupported.add(new UnsupportedResource("uniform", declarator.name(), type,
+							"image and subpass resources have no Iris Vulkan binding"));
+					}
 					matcher.appendReplacement(result, "");
 				}
 
 				continue;
 			}
 
-			Optional<IrisVulkanUniformSnapshot.Field> field = IrisVulkanUniformSnapshot.field(name, type, arraySuffix);
-			if (field.isPresent()) {
-				fields.add(field.get());
+			if (declarators.isEmpty()) {
+				unsupported.add(new UnsupportedResource("uniform", matcher.group(2).trim(), type,
+					"declaration could not be parsed"));
 			} else {
-				unsupported.add(new UnsupportedResource("uniform", name, type,
-					IrisVulkanUniformSnapshot.unsupportedReason(name, type, arraySuffix)));
+				for (UniformDeclarator declarator : declarators) {
+					Optional<IrisVulkanUniformSnapshot.Field> field = IrisVulkanUniformSnapshot.field(
+						declarator.name(), type, declarator.arraySuffix());
+					if (field.isPresent()) {
+						fields.add(field.get());
+					} else {
+						unsupported.add(new UnsupportedResource("uniform", declarator.name(), type,
+							IrisVulkanUniformSnapshot.unsupportedReason(
+								declarator.name(), type, declarator.arraySuffix())));
+					}
+				}
 			}
 
 			matcher.appendReplacement(result, "");
@@ -374,6 +423,55 @@ public final class IrisVulkanShaderResources {
 
 		matcher.appendTail(result);
 		return new UniformPatch(result.toString(), List.copyOf(fields), unsupported);
+	}
+
+	private static List<UniformDeclarator> parseUniformDeclarators(String declarations) {
+		List<UniformDeclarator> result = new ArrayList<>();
+		int start = 0;
+		int depth = 0;
+
+		for (int index = 0; index <= declarations.length(); index++) {
+			char character = index == declarations.length() ? ',' : declarations.charAt(index);
+			if (character == '(' || character == '[' || character == '{') {
+				depth++;
+			} else if (character == ')' || character == ']' || character == '}') {
+				depth = Math.max(0, depth - 1);
+			} else if (character == ',' && depth == 0) {
+				UniformDeclarator declarator = parseUniformDeclarator(declarations.substring(start, index));
+				if (declarator == null) {
+					return List.of();
+				}
+				result.add(declarator);
+				start = index + 1;
+			}
+		}
+
+		return List.copyOf(result);
+	}
+
+	private static UniformDeclarator parseUniformDeclarator(String declaration) {
+		int depth = 0;
+		int initializer = -1;
+		for (int index = 0; index < declaration.length(); index++) {
+			char character = declaration.charAt(index);
+			if (character == '(' || character == '[' || character == '{') {
+				depth++;
+			} else if (character == ')' || character == ']' || character == '}') {
+				depth = Math.max(0, depth - 1);
+			} else if (character == '=' && depth == 0) {
+				initializer = index;
+				break;
+			}
+		}
+
+		String declarator = initializer < 0 ? declaration : declaration.substring(0, initializer);
+		Matcher matcher = UNIFORM_DECLARATOR.matcher(declarator);
+		if (!matcher.matches()) {
+			return null;
+		}
+
+		String arraySuffix = matcher.group(2);
+		return new UniformDeclarator(matcher.group(1), arraySuffix == null || arraySuffix.isBlank() ? null : arraySuffix.trim());
 	}
 
 	private static String injectUniformBlock(String source, List<IrisVulkanUniformSnapshot.Field> fields) {
@@ -700,6 +798,9 @@ public final class IrisVulkanShaderResources {
 
 	private record UniformPatch(String source, List<IrisVulkanUniformSnapshot.Field> fields,
 								Set<UnsupportedResource> unsupported) {
+	}
+
+	private record UniformDeclarator(String name, String arraySuffix) {
 	}
 
 	public record TexelBuffer(String name, GpuFormat format) {

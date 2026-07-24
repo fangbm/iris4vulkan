@@ -29,6 +29,8 @@ public final class IrisVulkanScreenPassPlanner {
 	private static final int COLOR_TARGET_COUNT = IrisVulkanGbufferTargets.COLOR_TARGET_COUNT;
 	private static final int FINAL_SOURCE_TARGET = IrisVulkanGbufferTargets.FINAL_SOURCE_TARGET;
 	private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+([iu]?sampler\\w+)\\s+(\\w+)\\s*((?:\\[[^\\]]*\\])+)?\\s*;");
+	private static final Pattern SHADOW_SAMPLER = Pattern.compile(
+		"(?m)^(\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+)sampler2DShadow(\\s+(shadowtex[A-Za-z0-9_]*)\\s*;)");
 	private static final Pattern IMAGE_UNIFORM = Pattern.compile("(?m)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:(?:readonly|writeonly|coherent|volatile)\\s+)*([iu]?image\\w+)\\s+(\\w+)\\s*((?:\\[[^\\]]*\\])+)?\\s*;");
 	private static final Pattern RESOURCE_BLOCK = Pattern.compile("(?ms)^\\s*(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:readonly|writeonly|coherent|volatile|restrict)\\s+)*(uniform|buffer)\\s+([A-Za-z_]\\w*)\\s*\\{.*?}\\s*([A-Za-z_]\\w*)?\\s*((?:\\[[^\\]]*\\])+)?\\s*;");
 
@@ -115,16 +117,16 @@ public final class IrisVulkanScreenPassPlanner {
 				failureReason("transform failed", e));
 		}
 
-		String fragment = transformed.get(PatchShaderType.FRAGMENT);
+		String vertex = patchShadowSamplers(IrisVulkanCustomTextures.patchShaderSource(programSet.getPack(), stage,
+			transformed.get(PatchShaderType.VERTEX)));
+		String fragment = patchShadowSamplers(IrisVulkanCustomTextures.patchShaderSource(programSet.getPack(), stage,
+			transformed.get(PatchShaderType.FRAGMENT)));
 		List<String> samplers = samplerNames(fragment);
 
 		List<String> unsupportedResources = unsupportedResources(fragment, programSet, stage);
 		List<String> preflightReasons = new ArrayList<>();
 		if (!unsupportedResources.isEmpty()) {
 			preflightReasons.add("unsupported shader resource(s) " + unsupportedResources);
-		}
-		if (!directives.getMipmappedBuffers().isEmpty()) {
-			preflightReasons.add("mipmap chain is not implemented for buffer(s) " + directives.getMipmappedBuffers());
 		}
 		if (!preflightReasons.isEmpty()) {
 			return skipped(kind, label, sourceName, samplers, collapseOutputs, directives,
@@ -146,7 +148,6 @@ public final class IrisVulkanScreenPassPlanner {
 			return skipped(kind, label, sourceName, samplers, false, directives, "no color outputs in ProgramDirectives");
 		}
 
-		String vertex = transformed.get(PatchShaderType.VERTEX);
 		IrisVulkanScreenPassGraph.PipelineHandle pipeline = new IrisVulkanScreenPassGraph.PipelineHandle(() ->
 			createPipeline(label, drawBuffers, collapseOutputs, targetFormats, vertex, fragment));
 
@@ -265,9 +266,51 @@ public final class IrisVulkanScreenPassPlanner {
 		return switch (name) {
 			case "InSampler", "Sampler0", "u_MainSampler", "texture", "tex", "composite",
 				 "gcolor", "gdepth", "gnormal", "gaux1", "gaux2", "gaux3", "gaux4",
-				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex", "noisetex" -> true;
+				 "depthtex0", "depthtex1", "depthtex2", "gdepthtex", "noisetex",
+				 "shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1" -> true;
 			default -> IrisVulkanCustomTextures.supports(programSet.getPack(), stage, name);
 		};
+	}
+
+	private static String patchShadowSamplers(String source) {
+		if (source == null || !source.contains("sampler2DShadow")) {
+			return source;
+		}
+
+		Matcher declarations = SHADOW_SAMPLER.matcher(source);
+		List<String> samplers = new ArrayList<>();
+		while (declarations.find()) {
+			samplers.add(declarations.group(3));
+		}
+		if (samplers.isEmpty()) {
+			return source;
+		}
+
+		String patched = source;
+		for (String sampler : samplers) {
+			String base = "iris_vulkan_shadow_compare_" + sampler;
+			patched = Pattern.compile("\\btextureLod\\s*\\(\\s*" + Pattern.quote(sampler) + "\\s*,")
+				.matcher(patched).replaceAll(Matcher.quoteReplacement(base + "_lod("));
+			patched = Pattern.compile("\\btexture\\s*\\(\\s*" + Pattern.quote(sampler) + "\\s*,")
+				.matcher(patched).replaceAll(Matcher.quoteReplacement(base + "("));
+		}
+
+		Matcher matcher = SHADOW_SAMPLER.matcher(patched);
+		StringBuffer result = new StringBuffer();
+		while (matcher.find()) {
+			String sampler = matcher.group(3);
+			String function = "iris_vulkan_shadow_compare_" + sampler;
+			String replacement = matcher.group(1) + "sampler2D" + matcher.group(2)
+				+ "\nvec4 " + function + "(vec3 coord) {\n"
+				+ "    return vec4(step(coord.z, texture(" + sampler + ", coord.xy).r));\n"
+				+ "}\n"
+				+ "vec4 " + function + "_lod(vec3 coord, float lod) {\n"
+				+ "    return vec4(step(coord.z, textureLod(" + sampler + ", coord.xy, lod).r));\n"
+				+ "}\n";
+			matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+		}
+		matcher.appendTail(result);
+		return result.toString();
 	}
 
 	private static List<Integer> invalidDrawBuffers(int[] configured) {
@@ -295,15 +338,19 @@ public final class IrisVulkanScreenPassPlanner {
 			graph.beginPasses().size(), graph.preparePasses().size(), graph.deferredPasses().size(),
 			graph.compositePasses().size(), graph.finalPass() != null);
 
+		Map<String, Integer> skippedReasons = new java.util.LinkedHashMap<>();
 		for (IrisVulkanScreenPassGraph.Node node : graph.nodes()) {
 			if (node.ready()) {
 				Iris.logger.info("Native Vulkan screen pass node {}: status={}, drawBuffers={}, samplers={}, explicitFlips={}, mipmappedBuffers={}, viewport={}, collapseOutputs={}.",
 					node.label(), node.status(), java.util.Arrays.toString(node.drawBuffers()), node.samplers(),
 					node.explicitFlips(), node.mipmappedBuffers(), node.viewport(), node.collapseOutputs());
 			} else {
-				Iris.logger.info("Native Vulkan screen pass node {}: status={}, samplers={}, reason={}.",
-					node.label(), node.status(), node.samplers(), node.failureReason());
+				skippedReasons.merge(node.failureReason(), 1, Integer::sum);
 			}
+		}
+
+		if (!skippedReasons.isEmpty()) {
+			Iris.logger.info("Skipped native Vulkan screen pass nodes by reason: {}.", skippedReasons);
 		}
 	}
 }

@@ -107,12 +107,10 @@ public final class IrisVulkanUniformSnapshot {
 			block.append("    ").append(field.type()).append(' ').append(field.name()).append(";\n");
 		}
 
-		block.append("} iris_vulkan_uniforms;\n");
-
-		for (Field field : ordered) {
-			block.append("#define ").append(field.name()).append(" (iris_vulkan_uniforms.")
-				.append(field.name()).append(")\n");
-		}
+		// Keep block members in the global namespace. GLSL's normal scope rules then
+		// allow shader-local variables to shadow a uniform without macro expansion
+		// turning the local declaration into an assignment to the uniform block.
+		block.append("};\n");
 
 		return block.toString();
 	}

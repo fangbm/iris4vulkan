@@ -238,7 +238,11 @@ public final class IrisNativeVulkan {
 	}
 
 	public static int[] getDrawBuffersForCurrentPhase() {
-		ShaderKey shaderKey = shaderKeyForCurrentPhase();
+		return getDrawBuffersForPhase(currentPhase());
+	}
+
+	public static int[] getDrawBuffersForPhase(WorldRenderingPhase phase) {
+		ShaderKey shaderKey = PHASE_SHADER_KEYS.get(phase);
 
 		if (shaderKey == null) {
 			return new int[0];
@@ -365,6 +369,11 @@ public final class IrisNativeVulkan {
 
 	public static String screenPassDummySamplers() {
 		return System.getProperty("iris.vulkan.screenPassDummySamplers", "");
+	}
+
+	public static int debugOutputTarget() {
+		int target = Integer.getInteger("iris.vulkan.debugOutputTarget", -1);
+		return target >= 0 && target < IrisVulkanGbufferTargets.COLOR_TARGET_COUNT ? target : -1;
 	}
 
 	public static boolean shouldDummyScreenPassSampler(String sampler) {
@@ -816,6 +825,9 @@ public final class IrisNativeVulkan {
 			: IrisVulkanShaderResources.prepare(renderPipeline, shaderKey, vertex, fragment);
 
 		try {
+			if (gbufferPass && Boolean.getBoolean("iris.vulkan.dumpGbufferShaders")) {
+				dumpShaderSources(name, prepared, "prepared gbuffer");
+			}
 			try (IntermediaryShaderModule vertexModule = compiler.createIntermediary(name + "_vertex", prepared.vertex(), ShaderType.VERTEX);
 				 IntermediaryShaderModule fragmentModule = compiler.createIntermediary(name + "_fragment", prepared.fragment(), ShaderType.FRAGMENT)) {
 				GlslCompiler.CompiledModules modules = compiler.compile(device, prepared.pipeline(), vertexModule, fragmentModule);

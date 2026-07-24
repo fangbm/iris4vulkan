@@ -41,6 +41,7 @@ public final class IrisVulkanRenderPassBindings {
 		"iris_Fog", "Fog"
 	);
 	private static final Set<String> WARNED_DUMMY_TEXTURES = ConcurrentHashMap.newKeySet();
+	private static final Set<String> WARNED_SHADOW_FALLBACKS = ConcurrentHashMap.newKeySet();
 	private static final Set<String> LOGGED_SCREEN_PASS_BINDINGS = ConcurrentHashMap.newKeySet();
 	private static final Map<RenderPass, ScreenPassContext> SCREEN_PASS_CONTEXTS =
 		Collections.synchronizedMap(new WeakHashMap<>());
@@ -215,6 +216,13 @@ public final class IrisVulkanRenderPassBindings {
 			return fromCustom(IrisVulkanCustomTextures.noise(currentNoiseTextureResolution()));
 		}
 
+		if (isShadowSampler(sampler)) {
+			if (WARNED_SHADOW_FALLBACKS.add(sampler)) {
+				Iris.logger.warn("Using a fully-lit fallback for native Vulkan shadow sampler {}; real shadow targets are not wired yet.", sampler);
+			}
+			return dummyTextureBinding();
+		}
+
 		IrisVulkanCustomTextures.Binding customBinding = IrisVulkanCustomTextures.find(stage, sampler);
 
 		if (customBinding != null) {
@@ -254,6 +262,11 @@ public final class IrisVulkanRenderPassBindings {
 		return sampler.equals("colortex" + IrisVulkanGbufferTargets.FINAL_SOURCE_TARGET)
 			|| sampler.equals("gnormal")
 			|| sampler.equals("gaux3");
+	}
+
+	private static boolean isShadowSampler(String sampler) {
+		return sampler.equals("shadowtex0") || sampler.equals("shadowtex1")
+			|| sampler.equals("shadowcolor0") || sampler.equals("shadowcolor1");
 	}
 
 	private static TextureBinding fromCustom(IrisVulkanCustomTextures.Binding binding) {
@@ -395,10 +408,17 @@ public final class IrisVulkanRenderPassBindings {
 	}
 
 	private static GpuTextureView findRenderTargetView(String sampler,
-													   List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments) {
+												   List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments) {
+		int logicalTarget = IrisVulkanGbufferTargets.colorSamplerTarget(sampler);
 		GpuTextureView gbufferView = IrisVulkanGbufferTargets.colorSamplerView(sampler);
 
 		if (gbufferView != null) {
+			for (RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment : colorAttachments) {
+				if (attachment != null && IrisVulkanGbufferTargets.isCurrentColorAttachment(logicalTarget,
+					attachment.textureView())) {
+					return IrisVulkanGbufferTargets.nextView(logicalTarget);
+				}
+			}
 			return gbufferView;
 		}
 

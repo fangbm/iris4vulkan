@@ -376,6 +376,15 @@ public final class IrisNativeVulkan {
 		return target >= 0 && target < IrisVulkanGbufferTargets.COLOR_TARGET_COUNT ? target : -1;
 	}
 
+	public static boolean debugOutputDepth() {
+		return Boolean.getBoolean("iris.vulkan.debugOutputDepth");
+	}
+
+	public static String debugStopAfterPassLabel() {
+		String label = System.getProperty("iris.vulkan.debugStopAfterPass");
+		return label == null || label.isBlank() ? null : label.trim().toLowerCase(java.util.Locale.ROOT);
+	}
+
 	public static boolean shouldDummyScreenPassSampler(String sampler) {
 		String configured = screenPassDummySamplers();
 

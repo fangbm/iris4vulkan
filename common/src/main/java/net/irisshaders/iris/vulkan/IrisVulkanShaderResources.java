@@ -56,6 +56,7 @@ public final class IrisVulkanShaderResources {
 	private static final Pattern SODIUM_SECTION_TIME_UNIFORM = Pattern.compile("(?m)^\\s*uniform\\s+isamplerBuffer\\s+u_SectionTimeInfo\\s*;\\s*\\R?");
 	private static final Pattern SODIUM_CHUNK_FADE_FETCH = Pattern.compile("(?m)^(\\s*)int\\s+chunkFade\\s*=\\s*texelFetch\\s*\\(\\s*u_SectionTimeInfo\\s*,.*\\)\\s*\\.r\\s*;\\s*$");
 	private static final Pattern FLOAT_TEXTURE_SIZE_INITIALIZER = Pattern.compile("(?m)^(\\s*)(vec[234])\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*textureSize\\s*\\(([^;]+)\\)\\s*;");
+	private static final List<String> DEPTH_SAMPLERS = List.of("depthtex0", "depthtex1", "depthtex2", "gdepthtex");
 	private static final Map<RenderPipeline, ResourceSet> RESOURCE_SETS =
 		java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
@@ -109,6 +110,9 @@ public final class IrisVulkanShaderResources {
 		String patchedFragment = patchSodiumNativeVulkanUniforms(fragment, shaderKey);
 		patchedVertex = patchStrictVulkanConversions(patchedVertex);
 		patchedFragment = patchStrictVulkanConversions(patchedFragment);
+		if (shaderKey == null) {
+			patchedFragment = patchScreenPassDepthSemantics(patchedFragment);
+		}
 		UniformPatch vertexUniforms = patchLooseUniforms(patchedVertex);
 		UniformPatch fragmentUniforms = patchLooseUniforms(patchedFragment);
 		LinkedHashMap<String, IrisVulkanUniformSnapshot.Field> fieldsByName = new LinkedHashMap<>();
@@ -127,6 +131,9 @@ public final class IrisVulkanShaderResources {
 		List<IrisVulkanUniformSnapshot.Field> uniformFields = List.copyOf(fieldsByName.values());
 		patchedVertex = injectUniformBlock(vertexUniforms.source(), uniformFields);
 		patchedFragment = injectUniformBlock(fragmentUniforms.source(), uniformFields);
+		if (shaderKey == null) {
+			patchedVertex = patchScreenPassVertexLocations(patchedVertex);
+		}
 		patchedVertex = patchMissingVertexInputs(patchedVertex, vertexFormats);
 		patchedVertex = patchTbnMatrixOutput(patchedVertex, shaderKey);
 		patchedFragment = patchTbnMatrixInput(patchedFragment, shaderKey);
@@ -139,6 +146,13 @@ public final class IrisVulkanShaderResources {
 		RESOURCE_SETS.put(pipeline, resources);
 
 		return new Prepared(patchedVertex, patchedFragment, pipeline, resources);
+	}
+
+	private static String patchScreenPassVertexLocations(String source) {
+		String patched = Pattern.compile("(?m)^(\\s*)in\\s+vec3\\s+Position\\s*;")
+			.matcher(source).replaceAll("$1layout(location = 0) in vec3 Position;");
+		return Pattern.compile("(?m)^(\\s*)in\\s+vec2\\s+UV0\\s*;")
+			.matcher(patched).replaceAll("$1layout(location = 1) in vec2 UV0;");
 	}
 
 	public static ResourceSet resourcesFor(RenderPipeline pipeline) {
@@ -186,6 +200,70 @@ public final class IrisVulkanShaderResources {
 	private static String patchStrictVulkanConversions(String source) {
 		return FLOAT_TEXTURE_SIZE_INITIALIZER.matcher(source)
 			.replaceAll("$1$2 $3 = $2(textureSize($4));");
+	}
+
+	private static String patchScreenPassDepthSemantics(String source) {
+		String patched = source;
+		StringBuilder helpers = new StringBuilder();
+
+		for (String sampler : DEPTH_SAMPLERS) {
+			boolean patchedSampler = false;
+			String textureFunction = "iris_vulkan_texture_" + sampler;
+			String texelFetchFunction = "iris_vulkan_texelFetch_" + sampler;
+			String textureGatherFunction = "iris_vulkan_textureGather_" + sampler;
+
+			Pattern texture = Pattern.compile("\\btexture\\s*\\(\\s*" + sampler + "\\s*,");
+			Matcher textureMatcher = texture.matcher(patched);
+			if (textureMatcher.find()) {
+				patched = textureMatcher.replaceAll(textureFunction + "(");
+				patchedSampler = true;
+			}
+
+			Pattern texelFetch = Pattern.compile("\\btexelFetch\\s*\\(\\s*" + sampler + "\\s*,");
+			Matcher texelFetchMatcher = texelFetch.matcher(patched);
+			if (texelFetchMatcher.find()) {
+				patched = texelFetchMatcher.replaceAll(texelFetchFunction + "(");
+				patchedSampler = true;
+			}
+
+			Pattern textureGather = Pattern.compile("\\btextureGather\\s*\\(\\s*" + sampler + "\\s*,");
+			Matcher textureGatherMatcher = textureGather.matcher(patched);
+			if (textureGatherMatcher.find()) {
+				patched = textureGatherMatcher.replaceAll(textureGatherFunction + "(");
+				patchedSampler = true;
+			}
+
+			if (!patchedSampler) {
+				continue;
+			}
+
+			helpers.append("\nvec4 ").append(textureFunction).append("(vec2 coord) {\n")
+				.append("    vec4 value = texture(").append(sampler).append(", coord);\n")
+				.append("    value.r = 1.0 - value.r;\n")
+				.append("    return value;\n}\n")
+				.append("vec4 ").append(texelFetchFunction).append("(ivec2 texel, int lod) {\n")
+				.append("    vec4 value = texelFetch(").append(sampler).append(", texel, lod);\n")
+				.append("    value.r = 1.0 - value.r;\n")
+				.append("    return value;\n}\n")
+				.append("vec4 ").append(textureGatherFunction).append("(vec2 coord) {\n")
+				.append("    return vec4(1.0) - textureGather(").append(sampler).append(", coord);\n")
+				.append("}\n");
+		}
+
+		if (helpers.isEmpty()) {
+			return patched;
+		}
+
+		Matcher samplerMatcher = SAMPLER.matcher(patched);
+		int insertionPoint = -1;
+		while (samplerMatcher.find()) {
+			insertionPoint = samplerMatcher.end();
+		}
+		if (insertionPoint < 0) {
+			return patched;
+		}
+
+		return patched.substring(0, insertionPoint) + helpers + patched.substring(insertionPoint);
 	}
 
 	private static RenderPipeline extendPipeline(RenderPipeline original, ResourceSet resources, VertexFormat[] vertexFormats,

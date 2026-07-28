@@ -45,8 +45,27 @@ public final class IrisVulkanUniformSnapshot {
 	private static final Map<String, Matrix4f> PREVIOUS_MATRICES = new LinkedHashMap<>();
 	private static volatile CustomUniforms activeCustomUniforms;
 	private static int previousFrame = Integer.MIN_VALUE;
+	private static boolean loggedDebugUniforms;
+	private static long previousVulkanFrameNanos;
+	private static float vulkanFrameTime = 1.0f / 60.0f;
+	private static float vulkanFrameTimeCounter;
+	private static int vulkanFrameCounter;
 
 	private IrisVulkanUniformSnapshot() {
+	}
+
+	public static synchronized void beginFrame() {
+		long now = System.nanoTime();
+		if (previousVulkanFrameNanos != 0L) {
+			float elapsed = (now - previousVulkanFrameNanos) * 1.0e-9f;
+			vulkanFrameTime = Math.clamp(elapsed, 0.001f, 0.25f);
+		}
+		previousVulkanFrameNanos = now;
+		vulkanFrameTimeCounter += vulkanFrameTime;
+		if (vulkanFrameTimeCounter >= 3600.0f) {
+			vulkanFrameTimeCounter = 0.0f;
+		}
+		vulkanFrameCounter = (vulkanFrameCounter + 1) % 720720;
 	}
 
 	public static synchronized void registerActiveCustomUniforms(CustomUniforms customUniforms) {
@@ -128,9 +147,34 @@ public final class IrisVulkanUniformSnapshot {
 		for (Layout layout : layouts) {
 			write(data, layout.offset(), layout.field());
 		}
+		logDebugUniformsOnce(layouts);
 
 		data.clear();
 		return new Snapshot(data, size);
+	}
+
+	private static void logDebugUniformsOnce(List<Layout> layouts) {
+		String configured = System.getProperty("iris.vulkan.debugUniforms");
+		if (loggedDebugUniforms || configured == null || configured.isBlank()) {
+			return;
+		}
+
+		Map<String, Field> available = new LinkedHashMap<>();
+		for (Layout layout : layouts) {
+			available.put(layout.field().name(), layout.field());
+		}
+		List<String> values = new ArrayList<>();
+		for (String requested : configured.split(",")) {
+			String name = requested.trim();
+			Field field = available.get(name);
+			if (field != null) {
+				values.add(name + "=" + value(name, field.type()));
+			}
+		}
+		if (!values.isEmpty()) {
+			loggedDebugUniforms = true;
+			Iris.logger.info("Native Vulkan uniform diagnostic: {}", String.join(", ", values));
+		}
 	}
 
 	private static List<Layout> layouts(Collection<Field> fields) {
@@ -171,6 +215,16 @@ public final class IrisVulkanUniformSnapshot {
 	}
 
 	private static Object value(String name, String type) {
+		Object vulkanFrameValue = switch (name) {
+			case "frameTime" -> vulkanFrameTime;
+			case "frameTimeCounter" -> vulkanFrameTimeCounter;
+			case "frameCounter" -> vulkanFrameCounter;
+			default -> null;
+		};
+		if (vulkanFrameValue != null) {
+			return vulkanFrameValue;
+		}
+
 		Optional<CustomUniforms.Snapshot> custom = customUniform(name);
 		if (custom.isPresent() && custom.get().type().equals(type)) {
 			return custom.get().value();
@@ -181,12 +235,11 @@ public final class IrisVulkanUniformSnapshot {
 		return switch (name) {
 			case "gbufferModelView", "iris_ModelViewMatrix", "iris_ModelViewMat" -> requiredMatrix(
 				CapturedRenderingState.INSTANCE.getGbufferModelView(), name);
-			case "gbufferProjection", "iris_ProjectionMatrix", "iris_ProjMat" -> requiredMatrix(
-				CapturedRenderingState.INSTANCE.getGbufferProjection(), name);
+			case "gbufferProjection", "iris_ProjectionMatrix", "iris_ProjMat" -> shaderpackProjection(name);
 			case "gbufferModelViewInverse", "iris_ModelViewMatrixInverse", "iris_ModelViewMatInverse" ->
 				requiredMatrix(CapturedRenderingState.INSTANCE.getGbufferModelView(), name).invert();
 			case "gbufferProjectionInverse", "iris_ProjectionMatrixInverse", "iris_ProjMatInverse" ->
-				requiredMatrix(CapturedRenderingState.INSTANCE.getGbufferProjection(), name).invert();
+				shaderpackProjection(name).invert();
 			case "gbufferPreviousModelView" -> previousMatrix("gbufferModelView", name);
 			case "gbufferPreviousProjection" -> previousMatrix("gbufferProjection", name);
 			case "shadowModelView" -> requiredMatrix(ShadowRenderer.MODELVIEW, name);
@@ -206,11 +259,11 @@ public final class IrisVulkanUniformSnapshot {
 			case "viewHeight" -> (float) client.gameRenderer.mainRenderTarget().height;
 			case "aspectRatio" -> (float) client.gameRenderer.mainRenderTarget().width /
 				client.gameRenderer.mainRenderTarget().height;
-			case "near" -> 0.05f;
-			case "far" -> (float) client.options.getEffectiveRenderDistance() * 16.0f;
-			case "frameTimeCounter" -> SystemTimeUniforms.TIMER.getFrameTimeCounter();
-			case "frameTime" -> SystemTimeUniforms.TIMER.getLastFrameTime();
-			case "frameCounter" -> SystemTimeUniforms.COUNTER.getAsInt();
+			case "near" -> projectionPlanes(CapturedRenderingState.INSTANCE.getGbufferProjection()).near();
+			case "far" -> projectionPlanes(CapturedRenderingState.INSTANCE.getGbufferProjection()).far();
+			case "frameTimeCounter" -> vulkanFrameTimeCounter;
+			case "frameTime" -> vulkanFrameTime;
+			case "frameCounter" -> vulkanFrameCounter;
 			case "worldTime" -> worldTime(client);
 			case "worldDay" -> worldDay(client);
 			case "moonPhase" -> client.gameRenderer.mainCamera().attributeProbe()
@@ -246,7 +299,7 @@ public final class IrisVulkanUniformSnapshot {
 	}
 
 	private static void syncPreviousMatrices() {
-		int frame = SystemTimeUniforms.COUNTER.getAsInt();
+		int frame = vulkanFrameCounter;
 		if (frame == previousFrame) {
 			return;
 		}
@@ -259,7 +312,41 @@ public final class IrisVulkanUniformSnapshot {
 		Matrix4fc modelView = CapturedRenderingState.INSTANCE.getGbufferModelView();
 		Matrix4fc projection = CapturedRenderingState.INSTANCE.getGbufferProjection();
 		if (modelView != null) CURRENT_MATRICES.put("gbufferModelView", new Matrix4f(modelView));
-		if (projection != null) CURRENT_MATRICES.put("gbufferProjection", new Matrix4f(projection));
+		if (projection != null) CURRENT_MATRICES.put("gbufferProjection", shaderpackProjection("gbufferProjection"));
+	}
+
+	private static Matrix4f shaderpackProjection(String name) {
+		Matrix4fc nativeProjection = CapturedRenderingState.INSTANCE.getGbufferProjection();
+		if (nativeProjection == null) {
+			throw unsupported(name, "mat4", "captured matrix is unavailable for this pass");
+		}
+
+		ProjectionPlanes planes = projectionPlanes(nativeProjection);
+		float verticalScale = Math.abs(nativeProjection.m11());
+		float horizontalScale = Math.abs(nativeProjection.m00());
+		if (!(verticalScale > 0.0f) || !(horizontalScale > 0.0f)) {
+			throw unsupported(name, "mat4", "captured perspective scale is invalid");
+		}
+
+		float fov = 2.0f * (float) Math.atan(1.0f / verticalScale);
+		float aspect = verticalScale / horizontalScale;
+		return new Matrix4f().setPerspective(fov, aspect, planes.near(), planes.far(), false);
+	}
+
+	private static ProjectionPlanes projectionPlanes(Matrix4fc projection) {
+		if (projection != null) {
+			float depthScale = projection.m22();
+			float depthTranslate = projection.m32();
+			float far = depthScale == 0.0f ? Float.NaN : depthTranslate / depthScale;
+			float near = depthTranslate / (depthScale + 1.0f);
+			if (Float.isFinite(near) && Float.isFinite(far) && near > 0.0f && far > near) {
+				return new ProjectionPlanes(near, far);
+			}
+		}
+
+		Minecraft client = client();
+		return new ProjectionPlanes(0.05f, Math.max(16.0f,
+			(float) client.options.getEffectiveRenderDistance() * 16.0f));
 	}
 
 	private static Matrix3f normalMatrix(Matrix4f modelView) {
@@ -431,7 +518,8 @@ public final class IrisVulkanUniformSnapshot {
 	private static int size(String type) {
 		return switch (type) {
 			case "vec2", "ivec2" -> 8;
-			case "vec3", "vec4", "ivec3", "ivec4" -> 16;
+			case "vec3", "ivec3" -> 12;
+			case "vec4", "ivec4" -> 16;
 			case "mat3" -> 48;
 			case "mat4" -> 64;
 			default -> 4;
@@ -470,6 +558,9 @@ public final class IrisVulkanUniformSnapshot {
 		target.putFloat(value.m00()).putFloat(value.m01()).putFloat(value.m02()).putFloat(0.0f);
 		target.putFloat(value.m10()).putFloat(value.m11()).putFloat(value.m12()).putFloat(0.0f);
 		target.putFloat(value.m20()).putFloat(value.m21()).putFloat(value.m22()).putFloat(0.0f);
+	}
+
+	private record ProjectionPlanes(float near, float far) {
 	}
 
 	private static UnsupportedOperationException unsupported(String name, String type, String reason) {

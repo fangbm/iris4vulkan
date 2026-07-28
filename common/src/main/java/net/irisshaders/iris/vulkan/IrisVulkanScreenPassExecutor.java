@@ -925,9 +925,16 @@ public final class IrisVulkanScreenPassExecutor {
 			exposure = 1.0f;
 		}
 		String channel = System.getProperty("iris.vulkan.debugOutputChannel", "rgb");
-		String colorExpression = channel.toLowerCase(Locale.ROOT).startsWith("alpha")
-			? "vec3(value.a)"
-			: "value.rgb";
+		String colorExpression = switch (channel.toLowerCase(Locale.ROOT)) {
+			case "r", "red" -> "vec3(value.r)";
+			case "g", "green" -> "vec3(value.g)";
+			case "b", "blue" -> "vec3(value.b)";
+			case "alpha", "alpha0" -> "vec3(value.a)";
+			case "nan" -> "vec3(isnan(value.r), isnan(value.g), isnan(value.b))";
+			case "inf", "infinite" -> "vec3(isinf(value.r), isinf(value.g), isinf(value.b))";
+			case "nonfinite" -> "vec3(isnan(value.r) || isinf(value.r), isnan(value.g) || isinf(value.g), isnan(value.b) || isinf(value.b))";
+			default -> "value.rgb";
+		};
 		String texelExpression = "alpha0".equalsIgnoreCase(channel)
 			? "ivec2(0)"
 			: "clamp(ivec2(gl_FragCoord.xy), ivec2(0), size - ivec2(1))";
